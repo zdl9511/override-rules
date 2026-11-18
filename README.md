@@ -123,6 +123,8 @@ https://raw.githubusercontent.com/zdl9511/override-rules/refs/heads/preview/conv
 
 脚本始终输出 `find-process-mode: strict`，供本机按需识别进程。微信进程分流需要流量经过本机 Mihomo，且客户端未覆盖此设置；路由器转发的其他设备流量无法获得原设备的进程名。
 
+`GLOBAL` 是内核预置的全局入口，脚本显式设置 `hidden: true`，使 Clash Party 的普通策略页仅显示上述四个策略。客户端开启「显示隐藏代理组」后仍可查看它。当前规则分流不引用 `GLOBAL`。
+
 ### 关于链式代理的说明
 
 在 Substore 添加自建节点时，设置 `dialer-proxy: "前置代理"` 即可自动识别链式代理。落地节点直接列在「国外」与「AI」中；脚本仅额外生成隐藏的「前置代理」组，其候选为 `DIRECT` 加所有非落地、非 Tailscale 节点，避免链式循环。订阅全部为落地节点时，「前置代理」仅保留 `DIRECT`。

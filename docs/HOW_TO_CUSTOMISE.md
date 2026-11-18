@@ -77,7 +77,7 @@ export const ICONS = {
 
 **定义新的服务代理组：**
 
-当前可见策略依次为「直连」「自定义直连」「国外」「AI」；国外与 AI 直接使用原始节点，只在订阅确有链式代理或 Tailscale 时生成对应隐藏组。可见策略采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
+当前可见策略依次为「直连」「自定义直连」「国外」「AI」；国外与 AI 直接使用原始节点，内核 `GLOBAL` 入口始终隐藏，链式代理和 Tailscale 对应的隐藏路由组按需生成。可见策略采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
 
 ```typescript
 // src/catalog/service-groups.ts
