@@ -14,13 +14,13 @@ import type {
 } from "../types/proxy";
 
 /**
- * 展平模式下直接引用非落地节点。
+ * 直接选择非落地节点，避免依赖隐藏的手动选择组。
  *
  * `regex=true` 时使用 `include-all`，并通过 `exclude-filter` 排除落地节点与
  * Tailscale 节点，避免链式代理形成循环、也避免 Tailscale 混入通用选择列表；
  * 没有可枚举的非落地节点时返回 `null`，由调用方回退到「落地节点」/`DIRECT`。
  */
-function buildFlattenedNodeSource(
+function buildSelectableNodeSource(
     nodes: ProxyNode[],
     landingNodes: ProxyNode[],
     tailscaleNodes: ProxyNode[],
@@ -56,9 +56,9 @@ function buildFlattenedBaseLists({
     flattenedNodeSource,
     flattenedNodes,
 }: FlattenedListsInput): BaseLists {
-    // 展平模式下「选择代理」已直接列出全部非落地节点
+    // 展平模式下「国外」已直接列出全部非落地节点
     // 因此不再生成「手动选择」组，也不再在候选列表中引用它。
-    // 展平模式下服务组也不再引用「选择代理」，而是与 SELECT 共用同一份展平节点来源，
+    // 展平模式下服务组也不再引用「国外」，而是与「国外」共用同一份展平节点来源，
     // 避免服务组仍然停留在「引用一个已展平的组」的中间状态。
     const defaultSelector: ProxyGroupCandidate[] = buildList<ProxyGroupCandidate>(
         landing && PROXY_GROUPS.LANDING,
@@ -88,12 +88,6 @@ function buildFlattenedBaseLists({
             hasLowCost && PROXY_GROUPS.LOW_COST,
             "DIRECT"
         ),
-        defaultProxiesDirect: buildList<ProxyGroupCandidate>(
-            "DIRECT",
-            landing && PROXY_GROUPS.LANDING,
-            flattenedNodeSource,
-            hasLowCost && PROXY_GROUPS.LOW_COST
-        ),
         defaultFallback,
         frontProxySelector,
     };
@@ -104,6 +98,7 @@ function buildFlattenedBaseLists({
  */
 interface GroupedListsInput {
     landing: boolean;
+    landingNodes: ProxyNode[];
     regexFilter: boolean;
     hasLowCost: boolean;
     suffixedCountryNames: string[];
@@ -113,6 +108,7 @@ interface GroupedListsInput {
 
 function buildGroupedBaseLists({
     landing,
+    landingNodes,
     regexFilter,
     hasLowCost,
     suffixedCountryNames,
@@ -122,10 +118,14 @@ function buildGroupedBaseLists({
     // 前置代理组不能包含落地节点（会与 `dialer-proxy: "前置代理"` 形成循环引用），
     // Tailscale 节点同理不应作为前置代理。
     const tailscaleNames = new Set(tailscaleNodes.map((node) => node.name).filter(Boolean));
-    const frontProxyNames = nonLandingNodes
-        .filter((node) => !tailscaleNames.has(node.name))
-        .map((node) => node.name)
-        .filter(Boolean);
+    const selectableNodes = nonLandingNodes.filter((node) => !tailscaleNames.has(node.name));
+    const frontProxyNames = selectableNodes.map((node) => node.name).filter(Boolean);
+    const nodeSource = buildSelectableNodeSource(
+        selectableNodes,
+        landingNodes,
+        tailscaleNodes,
+        regexFilter
+    );
 
     // 这里允许返回空列表，最终由 `domain/proxy-group.ts` 的构造工厂补 `DIRECT`。
     const defaultFallback: ProxyGroupCandidate[] = buildList<ProxyGroupCandidate>(
@@ -141,23 +141,17 @@ function buildGroupedBaseLists({
             suffixedCountryNames,
             hasLowCost && PROXY_GROUPS.LOW_COST,
             PROXY_GROUPS.MANUAL,
+            nodeSource,
             "DIRECT"
         ),
-        defaultProxies: buildList(
-            PROXY_GROUPS.SELECT,
+        defaultProxies: buildList<ProxyGroupCandidate>(
+            PROXY_GROUPS.FOREIGN,
             landing && PROXY_GROUPS.LANDING,
             suffixedCountryNames,
             hasLowCost && PROXY_GROUPS.LOW_COST,
             PROXY_GROUPS.MANUAL,
+            nodeSource,
             "DIRECT"
-        ),
-        defaultProxiesDirect: buildList(
-            "DIRECT",
-            landing && PROXY_GROUPS.LANDING,
-            suffixedCountryNames,
-            hasLowCost && PROXY_GROUPS.LOW_COST,
-            PROXY_GROUPS.SELECT,
-            PROXY_GROUPS.MANUAL
         ),
         defaultFallback,
         frontProxySelector: buildList(
@@ -188,7 +182,7 @@ export function buildBaseLists({
         return buildFlattenedBaseLists({
             landing,
             hasLowCost,
-            flattenedNodeSource: buildFlattenedNodeSource(
+            flattenedNodeSource: buildSelectableNodeSource(
                 regions.flattenedNodes,
                 landingNodes,
                 tailscaleNodes,
@@ -200,6 +194,7 @@ export function buildBaseLists({
 
     return buildGroupedBaseLists({
         landing,
+        landingNodes,
         regexFilter,
         hasLowCost,
         suffixedCountryNames,

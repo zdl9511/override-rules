@@ -1,5 +1,5 @@
 /**
- * 代理组组装：将前置组、服务组、尾部固定组、地区组按既定顺序拼接为完整的代理组列表。
+ * 代理组组装：先输出四个可见策略，再追加隐藏的节点选择辅助组。
  *
  * 各类代理组的定义分别位于：
  * - 服务组：`catalog/service-groups.ts`
@@ -23,9 +23,9 @@ import { isNotNull } from "../utils/primitives";
 import { buildNodeExcludeFilter, combineExcludeFilters } from "../utils/regex";
 import type { GroupBuildContext, ProxyGroup } from "../types/proxy";
 
-/** 顶层选择类代理组：选择代理、手动选择、以及链式代理相关组。 */
+/** 顶层选择类代理组：手动选择以及链式代理辅助组。 */
 function buildFrontGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
-    // 展平模式下「选择代理」已直接列出全部非落地节点，不再生成高度重合的「手动选择」组。
+    // 展平模式下「国外」已直接列出全部非落地节点，不再生成高度重合的「手动选择」组。
     // 分组模式保留该组：regex 模式交给内核动态填充，否则按上游顺序枚举。
     let manualGroup: ProxyGroup | null = null;
     if (ctx.nodes.regionLayout.mode === "grouped") {
@@ -39,7 +39,6 @@ function buildFrontGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
     }
 
     return [
-        selectGroup(PROXY_GROUPS.SELECT, ICONS.select, ctx.lists.defaultSelector),
         manualGroup,
         ctx.nodes.landing
             ? selectGroup(PROXY_GROUPS.FRONT_PROXY, ICONS.frontProxy, ctx.lists.frontProxySelector)
@@ -56,12 +55,10 @@ function buildFrontGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
 
 /** 由声明式目录生成的服务代理组。 */
 function buildServiceGroups(ctx: GroupBuildContext): ProxyGroup[] {
-    return serviceGroups.map((def) =>
-        selectGroup(def.name, def.icon, def.proxies(ctx), def.includeAll && ctx.flags.regexFilter)
-    );
+    return serviceGroups.map((def) => selectGroup(def.name, def.icon, def.proxies(ctx)));
 }
 
-/** 尾部固定代理组：Tailscale、广告拦截、Final、自动选择、故障转移。 */
+/** 尾部辅助组：Tailscale、自动选择、故障转移。 */
 function buildTailGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
     return [
         ctx.nodes.hasTailscale
@@ -73,14 +70,6 @@ function buildTailGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
                   true
               )
             : null,
-        selectGroup(
-            PROXY_GROUPS.AD_BLOCK,
-            ICONS.adBlock,
-            ["REJECT", "REJECT-DROP", "DIRECT"],
-            false,
-            ctx.flags.adblockSource === 0
-        ),
-        selectGroup(PROXY_GROUPS.FINAL, ICONS.final, [PROXY_GROUPS.SELECT, "DIRECT"]),
         urlTestGroup(PROXY_GROUPS.AUTO, ICONS.auto, ctx.lists.defaultFallback),
         fallbackGroup(PROXY_GROUPS.FALLBACK, ICONS.fallback, ctx.lists.defaultFallback),
     ];
@@ -138,12 +127,15 @@ function buildRegionGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
  * @returns 代理组数组（不含 GLOBAL，GLOBAL 由 `builders/config.ts` 追加）
  */
 export function buildProxyGroups(ctx: GroupBuildContext): ProxyGroup[] {
-    const groups: Array<ProxyGroup | null> = [
+    const helpers: Array<ProxyGroup | null> = [
         ...buildFrontGroups(ctx),
-        ...buildServiceGroups(ctx),
         ...buildTailGroups(ctx),
         ...buildRegionGroups(ctx),
     ];
 
-    return groups.filter(isNotNull);
+    // 辅助组仍可作为四个策略的候选，客户端主列表只展示分流策略。
+    return [
+        ...buildServiceGroups(ctx),
+        ...helpers.filter(isNotNull).map((group) => ({ ...group, hidden: true })),
+    ];
 }

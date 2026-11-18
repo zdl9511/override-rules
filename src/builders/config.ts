@@ -24,6 +24,7 @@ function appendGlobalGroup(groups: ProxyGroup[]): ProxyGroup[] {
         icon: ICONS.global,
         "include-all": true,
         type: "select",
+        hidden: true,
         proxies: groups.map((group) => String(group.name)),
     };
 
@@ -63,6 +64,7 @@ export function assembleConfig(
         proxies: config.proxies,
         ...(config.hosts !== undefined && { hosts: config.hosts }),
         ...(flags.fullConfig && buildFullConfig(flags)),
+        "find-process-mode": "strict",
         "proxy-groups": appendGlobalGroup(proxyGroups),
         "rule-providers": {
             ...baseRuleSets,

@@ -15,12 +15,9 @@ import type { CountryMeta } from "../types/proxy";
 const QURE = `${CDN_URL}/gh/Koolson/Qure@master/IconSet/Color`;
 
 /**
- * 供其他模块（如服务代理组）引用的地区键。
- *
- * 将「香港 / 台湾 / 美国」这类会被别处判断的地区定义为常量，
- * 避免在 `service-groups.ts` 等处硬编码字符串导致重命名时静默失效。
+ * 本表中常用的地区键。
  */
-export const COUNTRY_KEYS = {
+const COUNTRY_KEYS = {
     hongKong: "香港",
     taiwan: "台湾",
     unitedStates: "美国",

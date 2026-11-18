@@ -6,6 +6,7 @@ import { analyzeNodes } from "../../src/analysis/classify";
 import { buildBaseLists } from "../../src/builders/selectors";
 import { assembleConfig } from "../../src/builders/config";
 import { buildProxyGroups } from "../../src/builders/proxy-groups";
+import { CUSTOM_DIRECT_RULES } from "../../src/catalog/custom-direct";
 import { PROXY_GROUPS } from "../../src/catalog/group-names";
 import { ruleSets } from "../../src/catalog/rule-sets";
 import type { ClashConfig } from "../../src/types/clash";
@@ -39,16 +40,33 @@ const CONFIG: ClashConfig = {
 };
 
 describe("assembleConfig", () => {
-    it("追加 GLOBAL 组并以其前置组为候选", () => {
+    it("只展示直连、国外、AI、自定义直连四个策略", () => {
+        for (const args of [{}, { regex: "true" }, { adblock: "0" }] satisfies ScriptArgs[]) {
+            for (const config of [CONFIG, { proxies: [{ name: "NodeA" }] }, { proxies: [] }]) {
+                const result = run(args, config);
+                assert.deepEqual(
+                    result["proxy-groups"]?.filter((item) => !item.hidden).map((item) => item.name),
+                    ["直连", "国外", "AI", "自定义直连"]
+                );
+                assert.deepEqual(group(result, PROXY_GROUPS.DIRECT)?.proxies, ["DIRECT"]);
+                assert.deepEqual(group(result, PROXY_GROUPS.CUSTOM_DIRECT)?.proxies, [
+                    "直连",
+                    "国外",
+                ]);
+            }
+        }
+    });
+
+    it("隐藏 GLOBAL 组并保留全局模式的出口候选", () => {
         const result = run({}, CONFIG);
         const groups = result["proxy-groups"] ?? [];
         const global = groups.at(-1);
-
         assert.equal(global?.name, PROXY_GROUPS.GLOBAL);
+        assert.equal(global?.hidden, true);
         assert.equal(global?.["include-all"], true);
         assert.deepEqual(
             global?.proxies,
-            groups.slice(0, -1).map((item) => String(item.name))
+            groups.slice(0, -1).map((item) => item.name)
         );
     });
 
@@ -56,391 +74,215 @@ describe("assembleConfig", () => {
         const result = run({}, CONFIG);
         assert.deepEqual(result.proxies, CONFIG.proxies);
         assert.deepEqual(result.hosts, CONFIG.hosts);
+        assert.ok(!("hosts" in run({}, { proxies: [{ name: "NodeA" }] })));
     });
 
-    it("无上游 hosts 时不输出 hosts 字段", () => {
-        const result = run({}, { proxies: [{ name: "香港01" }] });
-        assert.ok(!("hosts" in result));
+    it("full 两种模式都开启按需进程识别", () => {
+        for (const full of ["true", "false"]) {
+            const result = run({ full }, CONFIG);
+            assert.equal(result["find-process-mode"], "strict");
+            assert.equal(result["mixed-port"], full === "true" ? 7890 : undefined);
+        }
+        assert.equal(run({}, CONFIG)["mixed-port"], undefined);
     });
 
-    it("full=true 时追加完整内核参数", () => {
-        const result = run({ full: "true" }, CONFIG);
-        assert.equal(result["mixed-port"], 7890);
-        assert.equal(result["external-controller"], ":9999");
-        assert.equal(result.mode, "rule");
+    it("自定义清单内嵌于配置，关闭广告也始终有效", () => {
+        const providers = run({ adblock: "0" }, CONFIG)["rule-providers"] ?? {};
+        assert.deepEqual(Object.keys(providers), ["CustomDirect"]);
+        assert.deepEqual(providers.CustomDirect, {
+            type: "inline",
+            behavior: "classical",
+            payload: CUSTOM_DIRECT_RULES,
+        });
     });
 
-    it("full 默认关闭", () => {
-        const result = run({}, CONFIG);
-        assert.equal(result["mixed-port"], undefined);
-    });
-
-    it("无地区组时三大主组直接使用节点（回归 #64）", () => {
+    it("没有地区组时国外与 AI 可以直接选节点", () => {
         const result = run({}, { proxies: [{ name: "NodeA" }, { name: "NodeB" }] });
-
-        // 展平后没有 AUTO / FALLBACK 的相互嵌套，也不再生成「手动选择」组。
-        assert.deepEqual(group(result, PROXY_GROUPS.SELECT)?.proxies, ["NodeA", "NodeB", "DIRECT"]);
+        for (const name of [PROXY_GROUPS.FOREIGN, PROXY_GROUPS.AI]) {
+            assert.deepEqual(group(result, name)?.proxies, ["NodeA", "NodeB", "DIRECT"]);
+        }
         assert.deepEqual(group(result, PROXY_GROUPS.AUTO)?.proxies, ["NodeA", "NodeB"]);
         assert.deepEqual(group(result, PROXY_GROUPS.FALLBACK)?.proxies, ["NodeA", "NodeB"]);
         assert.equal(group(result, PROXY_GROUPS.MANUAL), undefined);
-
-        // 服务组也直接使用展平节点，不再引用「选择代理」。
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, ["NodeA", "NodeB", "DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FINANCE)?.proxies, [
-            "DIRECT",
-            "NodeA",
-            "NodeB",
-        ]);
-        // 没有低倍率组时，静态资源组保持正常顺序。
-        assert.deepEqual(group(result, PROXY_GROUPS.STATIC_RESOURCES)?.proxies, [
-            "NodeA",
-            "NodeB",
-            "DIRECT",
-        ]);
     });
 
-    it("存在低倍率组时静态资源组优先使用低倍率节点", () => {
+    it("分组模式保留隐藏的测速、地区、低倍率候选", () => {
         const result = run(
             {},
+            { proxies: [...(CONFIG.proxies ?? []), { name: "香港 0.2x 大流量" }] }
+        );
+        assert.deepEqual(group(result, PROXY_GROUPS.AI)?.proxies, [
+            "国外",
+            "香港节点",
+            "美国节点",
+            "低倍率节点",
+            "手动选择",
+            "香港01",
+            "香港02",
+            "美国01",
+            "美国02",
+            "香港 0.2x 大流量",
+            "DIRECT",
+        ]);
+        for (const name of [
+            "香港节点",
+            "美国节点",
+            "低倍率节点",
+            "自动选择",
+            "故障转移",
+            "手动选择",
+        ]) {
+            assert.equal(group(result, name)?.hidden, true);
+        }
+    });
+
+    it("空订阅时每个组都有可用候选", () => {
+        const result = run({}, { proxies: [] });
+        for (const item of result["proxy-groups"] ?? []) {
+            assert.ok(item["include-all"] === true || (item.proxies?.length ?? 0) > 0, item.name);
+        }
+        assert.deepEqual(group(result, PROXY_GROUPS.AI)?.proxies, ["DIRECT"]);
+    });
+
+    it("全落地时前置代理仅包含 DIRECT", () => {
+        const result = run({}, { proxies: [{ name: "落地A", "dialer-proxy": "前置代理" }] });
+        assert.deepEqual(group(result, PROXY_GROUPS.LANDING)?.proxies, ["落地A"]);
+        assert.deepEqual(group(result, PROXY_GROUPS.FRONT_PROXY)?.proxies, ["DIRECT"]);
+        assert.deepEqual(group(result, PROXY_GROUPS.FOREIGN)?.proxies, ["落地节点", "DIRECT"]);
+        assert.deepEqual(group(result, PROXY_GROUPS.AI)?.proxies, ["落地节点", "DIRECT"]);
+        assert.equal(group(result, PROXY_GROUPS.LANDING)?.hidden, true);
+        assert.equal(group(result, PROXY_GROUPS.FRONT_PROXY)?.hidden, true);
+    });
+
+    it("regex 展平时国外和 AI 排除落地、Tailscale 节点", () => {
+        const result = run(
+            { regex: "true" },
             {
                 proxies: [
                     { name: "香港01" },
-                    { name: "香港02" },
-                    { name: "美国01" },
-                    { name: "美国02" },
-                    { name: "香港 0.2x 大流量" },
+                    { name: "落地A", "dialer-proxy": "前置代理" },
+                    { name: "Tailscale出口", type: "tailscale" },
                 ],
             }
         );
-
-        assert.deepEqual(group(result, PROXY_GROUPS.STATIC_RESOURCES)?.proxies, [
-            PROXY_GROUPS.LOW_COST,
-            PROXY_GROUPS.SELECT,
-            "香港节点",
-            "美国节点",
-            PROXY_GROUPS.MANUAL,
-            "DIRECT",
-        ]);
-        // 其他服务组仍保持正常顺序，低倍率组只移动一次。
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, [
-            PROXY_GROUPS.SELECT,
-            "香港节点",
-            "美国节点",
-            PROXY_GROUPS.LOW_COST,
-            PROXY_GROUPS.MANUAL,
-            "DIRECT",
-        ]);
+        for (const name of [PROXY_GROUPS.FOREIGN, PROXY_GROUPS.AI]) {
+            assert.equal(group(result, name)?.["include-all"], true);
+            assert.equal(group(result, name)?.["exclude-filter"], "^(?:落地A|Tailscale出口)$");
+        }
+        assert.deepEqual(group(result, PROXY_GROUPS.FRONT_PROXY)?.proxies, ["DIRECT", "香港01"]);
+        assert.deepEqual(group(result, PROXY_GROUPS.TAILSCALE)?.proxies, ["Tailscale出口"]);
+        assert.equal(group(result, PROXY_GROUPS.TAILSCALE)?.hidden, true);
     });
 
-    it("展平模式下静态资源组同样优先使用低倍率节点", () => {
-        const result = run({}, { proxies: [{ name: "NodeA" }, { name: "NodeB 0.2x 大流量" }] });
-
-        assert.deepEqual(group(result, PROXY_GROUPS.STATIC_RESOURCES)?.proxies, [
-            PROXY_GROUPS.LOW_COST,
-            "NodeA",
-            "NodeB 0.2x 大流量",
-            "DIRECT",
-        ]);
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, [
-            "NodeA",
-            "NodeB 0.2x 大流量",
-            PROXY_GROUPS.LOW_COST,
-            "DIRECT",
-        ]);
-    });
-
-    it("空 proxies 时所有代理组都不为空，且展平模式不生成手动选择组", () => {
-        const result = run({}, { proxies: [] });
-        const groups = result["proxy-groups"] ?? [];
-
-        assert.deepEqual(group(result, PROXY_GROUPS.SELECT)?.proxies, ["DIRECT"]);
-        assert.equal(group(result, PROXY_GROUPS.MANUAL), undefined);
-        assert.deepEqual(group(result, PROXY_GROUPS.AUTO)?.proxies, ["DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FALLBACK)?.proxies, ["DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, ["DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FINANCE)?.proxies, ["DIRECT"]);
-
-        for (const item of groups) {
-            if (item.proxies) {
-                assert.ok(item.proxies.length > 0, `${item.name} 不应包含空 proxies`);
+    it("分组模式的手动、地区和低倍率组排除 Tailscale", () => {
+        for (const regex of ["true", "false"]) {
+            const result = run(
+                { regex },
+                {
+                    proxies: [
+                        ...(CONFIG.proxies ?? []),
+                        { name: "美国-Tailscale 低倍率", type: "tailscale" },
+                    ],
+                }
+            );
+            const manual = group(result, PROXY_GROUPS.MANUAL);
+            for (const name of [PROXY_GROUPS.FOREIGN, PROXY_GROUPS.AI]) {
+                const policy = group(result, name);
+                if (regex === "true") {
+                    assert.equal(policy?.["include-all"], true);
+                    assert.equal(policy?.["exclude-filter"], "^(?:美国-Tailscale 低倍率)$");
+                } else {
+                    assert.ok(policy?.proxies?.includes("香港01"));
+                    assert.ok(policy?.proxies?.includes("美国01"));
+                    assert.ok(!policy?.proxies?.includes("美国-Tailscale 低倍率"));
+                }
+            }
+            if (regex === "true") {
+                assert.equal(manual?.["include-all"], true);
+                assert.equal(manual?.["exclude-filter"], "^(?:美国-Tailscale 低倍率)$");
+                assert.equal(
+                    group(result, "美国节点")?.["exclude-filter"],
+                    "美属|亚美尼亚|圣多美|普林西比|^(?:美国-Tailscale 低倍率)$"
+                );
+                assert.equal(
+                    group(result, PROXY_GROUPS.LOW_COST)?.["exclude-filter"],
+                    "^(?:美国-Tailscale 低倍率)$"
+                );
+            } else {
+                assert.deepEqual(
+                    manual?.proxies,
+                    CONFIG.proxies?.map((item) => item.name)
+                );
             }
         }
     });
 
-    it("全落地时保留落地节点组，前置代理仅包含 DIRECT", () => {
-        const result = run({}, { proxies: [{ name: "落地A", "dialer-proxy": "前置代理" }] });
-
-        assert.deepEqual(group(result, PROXY_GROUPS.LANDING)?.proxies, ["落地A"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FRONT_PROXY)?.proxies, ["DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.SELECT)?.proxies, [
-            PROXY_GROUPS.LANDING,
-            "DIRECT",
-        ]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FALLBACK)?.proxies, [PROXY_GROUPS.LANDING]);
-        assert.equal(group(result, PROXY_GROUPS.MANUAL), undefined);
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, [
-            PROXY_GROUPS.LANDING,
-            "DIRECT",
-        ]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FINANCE)?.proxies, [
-            "DIRECT",
-            PROXY_GROUPS.LANDING,
-        ]);
-    });
-
-    it("展平 + regex 时前置代理仍显式排除落地节点", () => {
+    it("展平模式下 Tailscale 不进入普通节点候选", () => {
         const result = run(
-            { regex: "true" },
-            {
-                proxies: [
-                    { name: "香港01" },
-                    { name: "香港02" },
-                    { name: "落地A", "dialer-proxy": "前置代理" },
-                ],
-            }
+            {},
+            { proxies: [{ name: "香港01" }, { name: "Tailscale出口", type: "tailscale" }] }
         );
-
-        assert.deepEqual(group(result, PROXY_GROUPS.FRONT_PROXY)?.proxies, [
-            "DIRECT",
-            "香港01",
-            "香港02",
-        ]);
-        assert.equal(group(result, PROXY_GROUPS.SELECT)?.["exclude-filter"], "^(?:落地A)$");
-        assert.equal(group(result, PROXY_GROUPS.SELECT)?.["include-all"], true);
-
-        const google = group(result, PROXY_GROUPS.GOOGLE);
-        assert.equal(google?.["include-all"], true);
-        assert.equal(google?.["exclude-filter"], "^(?:落地A)$");
-        assert.deepEqual(google?.proxies, [PROXY_GROUPS.LANDING, PROXY_GROUPS.LOW_COST, "DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FINANCE)?.proxies, [
-            "DIRECT",
-            PROXY_GROUPS.LANDING,
-            PROXY_GROUPS.LOW_COST,
-        ]);
+        assert.deepEqual(group(result, PROXY_GROUPS.FOREIGN)?.proxies, ["香港01", "DIRECT"]);
+        assert.deepEqual(group(result, PROXY_GROUPS.AI)?.proxies, ["香港01", "DIRECT"]);
     });
 
-    it("只有台湾时服务组不引用未生成的地区组", () => {
+    it("只剩一个达标地区时 AI 不引用未生成的地区组", () => {
         const result = run({}, { proxies: [{ name: "台湾01" }, { name: "台湾02" }] });
-        const allGroupNames = (result["proxy-groups"] ?? []).map((item) => item.name);
-
-        assert.ok(!allGroupNames.includes("台湾节点"));
-        assert.deepEqual(group(result, PROXY_GROUPS.BAHAMUT)?.proxies, [
-            "台湾01",
-            "台湾02",
-            "DIRECT",
-        ]);
-        assert.deepEqual(group(result, PROXY_GROUPS.BILIBILI)?.proxies, [
-            "DIRECT",
-            "台湾01",
-            "台湾02",
-        ]);
-        assert.ok(!group(result, PROXY_GROUPS.BAHAMUT)?.proxies?.includes("台湾节点"));
-        assert.ok(!group(result, PROXY_GROUPS.BILIBILI)?.proxies?.includes("台湾节点"));
-        assert.ok(!group(result, PROXY_GROUPS.BAHAMUT)?.proxies?.includes(PROXY_GROUPS.SELECT));
-        assert.ok(!group(result, PROXY_GROUPS.BILIBILI)?.proxies?.includes(PROXY_GROUPS.SELECT));
+        assert.equal(group(result, "台湾节点"), undefined);
+        assert.deepEqual(group(result, PROXY_GROUPS.AI)?.proxies, ["台湾01", "台湾02", "DIRECT"]);
     });
 
-    it("只有美国时 Truth Social 不引用未生成的地区组", () => {
-        const result = run({}, { proxies: [{ name: "美国01" }, { name: "美国02" }] });
-
-        assert.ok(!(result["proxy-groups"] ?? []).some((item) => item.name === "美国节点"));
-        assert.deepEqual(group(result, PROXY_GROUPS.TRUTH_SOCIAL)?.proxies, [
-            "美国01",
-            "美国02",
-            "DIRECT",
-        ]);
-        assert.ok(!group(result, PROXY_GROUPS.TRUTH_SOCIAL)?.proxies?.includes("美国节点"));
-        assert.ok(
-            !group(result, PROXY_GROUPS.TRUTH_SOCIAL)?.proxies?.includes(PROXY_GROUPS.SELECT)
-        );
+    it("保留 Geo 数据源与广告来源选项，广告直接 REJECT", () => {
+        for (const adblock of ["1", "2", "3"]) {
+            const result = run({ adblock }, CONFIG);
+            const provider = result["rule-providers"]?.ADBlock;
+            assert.equal(provider?.type, "http");
+            if (provider?.type !== "http") throw new Error("缺少广告规则源");
+            if (adblock === "1")
+                assert.equal(provider.url, "https://adrules.top/adrules-mihomo.mrs");
+            if (adblock === "2") assert.equal(provider, ruleSets.ADBlock);
+            if (adblock === "3") assert.match(provider.url, /AWAvenue-Ads-Rule/);
+            assert.ok(result["rules"]?.includes("RULE-SET,ADBlock,REJECT"));
+            assert.equal(result["geodata-mode"], true);
+            assert.ok(result["geox-url"]?.geoip);
+        }
     });
 
-    it("regex=true 时手动选择组使用 include-all，不枚举节点名称", () => {
-        const result = run({ regex: "true" }, CONFIG);
-        const manual = (result["proxy-groups"] ?? []).find(
-            (group) => group.name === PROXY_GROUPS.MANUAL
-        );
-
-        assert.equal(manual?.["include-all"], true);
-        assert.equal(manual?.proxies, undefined);
-    });
-
-    it("regex=false 时手动选择组仍按上游顺序枚举节点名称", () => {
-        const result = run({}, CONFIG);
-        const manual = (result["proxy-groups"] ?? []).find(
-            (group) => group.name === PROXY_GROUPS.MANUAL
-        );
-
-        assert.equal(manual?.["include-all"], undefined);
-        assert.deepEqual(
-            manual?.proxies,
-            CONFIG.proxies?.map((node) => node.name)
-        );
-    });
-
-    it("Tailscale 组隐藏且不进入手动选择列表", () => {
-        const result = run(
-            {},
-            {
-                proxies: [
-                    { name: "香港01" },
-                    { name: "香港02" },
-                    { name: "美国01" },
-                    { name: "美国02" },
-                    { name: "Tailscale出口", type: "tailscale" },
-                ],
+    it("所有节点候选与规则出口均存在，引用的策略组没有循环", () => {
+        for (const regex of ["true", "false"]) {
+            const result = run(
+                { regex },
+                {
+                    proxies: [
+                        ...(CONFIG.proxies ?? []),
+                        { name: "落地A", "dialer-proxy": "前置代理" },
+                        { name: "Tailscale出口", type: "tailscale" },
+                    ],
+                }
+            );
+            const groups = new Map(result["proxy-groups"]?.map((item) => [item.name, item]));
+            const names = new Set([
+                ...groups.keys(),
+                ...(result.proxies ?? []).map((item) => item.name),
+                "DIRECT",
+                "REJECT",
+            ]);
+            for (const item of groups.values()) {
+                for (const candidate of item.proxies ?? [])
+                    assert.ok(names.has(candidate), candidate);
             }
-        );
-
-        const tailscale = group(result, PROXY_GROUPS.TAILSCALE);
-        assert.equal(tailscale?.hidden, true);
-        assert.deepEqual(tailscale?.proxies, ["Tailscale出口"]);
-
-        assert.deepEqual(group(result, PROXY_GROUPS.MANUAL)?.proxies, [
-            "香港01",
-            "香港02",
-            "美国01",
-            "美国02",
-        ]);
-    });
-
-    it("展平模式下 Tailscale 节点不进入任何常规选择列表", () => {
-        const result = run(
-            {},
-            {
-                proxies: [{ name: "香港01" }, { name: "Tailscale出口", type: "tailscale" }],
+            for (const rule of result.rules ?? []) {
+                const parts = rule.split(",");
+                const target = parts.at(-1) === "no-resolve" ? parts.at(-2) : parts.at(-1);
+                assert.ok(target && names.has(target), rule);
             }
-        );
-
-        assert.equal(group(result, PROXY_GROUPS.MANUAL), undefined);
-        assert.deepEqual(group(result, PROXY_GROUPS.SELECT)?.proxies, ["香港01", "DIRECT"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.AUTO)?.proxies, ["香港01"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.FALLBACK)?.proxies, ["香港01"]);
-        assert.deepEqual(group(result, PROXY_GROUPS.GOOGLE)?.proxies, ["香港01", "DIRECT"]);
-        assert.equal(group(result, PROXY_GROUPS.TAILSCALE)?.hidden, true);
-    });
-
-    it("regex 分组模式下手动选择组排除 Tailscale", () => {
-        const result = run(
-            { regex: "true" },
-            {
-                proxies: [
-                    { name: "香港01" },
-                    { name: "香港02" },
-                    { name: "美国01" },
-                    { name: "美国02" },
-                    { name: "Tailscale出口", type: "tailscale" },
-                ],
+            function visit(name: string, path: string[]): void {
+                assert.ok(!path.includes(name), [...path, name].join(" → "));
+                for (const candidate of groups.get(name)?.proxies ?? []) {
+                    if (groups.has(candidate)) visit(candidate, [...path, name]);
+                }
             }
-        );
-
-        const manual = group(result, PROXY_GROUPS.MANUAL);
-        assert.equal(manual?.["include-all"], true);
-        assert.equal(manual?.["exclude-filter"], "^(?:Tailscale出口)$");
-    });
-
-    it("regex 地区组与低倍率组均排除 Tailscale", () => {
-        const result = run(
-            { regex: "true" },
-            {
-                proxies: [
-                    { name: "香港01" },
-                    { name: "香港02" },
-                    { name: "美国01" },
-                    { name: "美国02" },
-                    { name: "美国-Tailscale 低倍率", type: "tailscale" },
-                ],
-            }
-        );
-
-        assert.equal(
-            group(result, "美国节点")?.["exclude-filter"],
-            "美属|亚美尼亚|圣多美|普林西比|^(?:美国-Tailscale 低倍率)$"
-        );
-        assert.equal(
-            group(result, PROXY_GROUPS.LOW_COST)?.["exclude-filter"],
-            "^(?:美国-Tailscale 低倍率)$"
-        );
-    });
-
-    it("regex 展平模式同时排除落地节点与 Tailscale", () => {
-        const result = run(
-            { regex: "true" },
-            {
-                proxies: [
-                    { name: "香港01" },
-                    { name: "落地A", "dialer-proxy": "前置代理" },
-                    { name: "Tailscale出口", type: "tailscale" },
-                ],
-            }
-        );
-
-        const expected = "^(?:落地A|Tailscale出口)$";
-        assert.equal(group(result, PROXY_GROUPS.SELECT)?.["exclude-filter"], expected);
-        assert.equal(group(result, PROXY_GROUPS.GOOGLE)?.["exclude-filter"], expected);
-        assert.equal(group(result, PROXY_GROUPS.TAILSCALE)?.hidden, true);
-    });
-
-    it("引用同一份规则集与 Geo 数据源", () => {
-        const result = run({}, CONFIG);
-        const providers = result["rule-providers"] ?? {};
-        assert.equal(providers.SogouInput, ruleSets.SogouInput);
-        assert.equal(providers.Weibo, ruleSets.Weibo);
-        assert.equal(result["geodata-mode"], true);
-        assert.ok(result["geox-url"]?.geoip);
-    });
-
-    it("adblock=0 时广告拦截组隐藏", () => {
-        const result = run({ adblock: "0" }, CONFIG);
-        assert.equal(group(result, PROXY_GROUPS.AD_BLOCK)?.hidden, true);
-    });
-
-    it("adblock>0 时广告拦截组可见", () => {
-        const result = run({ adblock: "2" }, CONFIG);
-        assert.equal(group(result, PROXY_GROUPS.AD_BLOCK)?.hidden, undefined);
-    });
-
-    it("adblock=0 时 rule-providers 不包含广告规则集", () => {
-        const result = run({ adblock: "0" }, CONFIG);
-        const providers = result["rule-providers"] ?? {};
-        assert.ok(!("ADBlock" in providers));
-        assert.ok(!("AdditionalFilter" in providers));
-    });
-
-    it("adblock=1 时 ADBlock 指向 adrules.top", () => {
-        const result = run({ adblock: "1" }, CONFIG);
-        const providers = result["rule-providers"] ?? {};
-        assert.equal(providers.ADBlock?.url, "https://adrules.top/adrules-mihomo.mrs");
-        assert.equal(providers.ADBlock?.format, "mrs");
-        assert.ok("AdditionalFilter" in providers);
-    });
-
-    it("adblock=2 时 ADBlock 使用默认的 217heidai 规则集", () => {
-        const result = run({ adblock: "2" }, CONFIG);
-        const providers = result["rule-providers"] ?? {};
-        assert.equal(providers.ADBlock, ruleSets.ADBlock);
-        assert.ok("AdditionalFilter" in providers);
-    });
-
-    it("adblock=3 时 ADBlock 指向 AWAvenue", () => {
-        const result = run({ adblock: "3" }, CONFIG);
-        const providers = result["rule-providers"] ?? {};
-        assert.match(providers.ADBlock?.url ?? "", /AWAvenue-Ads-Rule/);
-        assert.equal(providers.ADBlock?.format, "mrs");
-        assert.ok("AdditionalFilter" in providers);
-    });
-
-    it("非 regex 模式下 Weibo 组不使用 include-all", () => {
-        const result = run({}, CONFIG);
-        const weibo = group(result, PROXY_GROUPS.WEIBO);
-        assert.equal(weibo?.["include-all"], undefined);
-        assert.ok(weibo?.proxies !== undefined);
-        assert.ok((weibo?.proxies?.length ?? 0) > 0);
-    });
-
-    it("regex 模式下 Weibo 组使用 include-all", () => {
-        const result = run({ regex: "true" }, CONFIG);
-        const weibo = group(result, PROXY_GROUPS.WEIBO);
-        assert.equal(weibo?.["include-all"], true);
+            for (const name of groups.keys()) visit(name, []);
+        }
     });
 });

@@ -57,18 +57,25 @@ export interface DnsConfig {
 /** Clash DNS Policy 支持的值类型。 */
 export type DnsPolicyValue = string | string[];
 
-type RuleProviderType = "http" | "file";
 type RuleProviderBehavior = "domain" | "classical" | "ipcidr";
 type RuleProviderFormat = "mrs" | "text" | "yaml";
 
-export interface RuleProvider {
-    type: RuleProviderType;
+interface HttpRuleProvider {
+    type: "http";
     behavior: RuleProviderBehavior;
     format: RuleProviderFormat;
     interval: number;
     url: string;
     path: string;
 }
+
+interface InlineRuleProvider {
+    type: "inline";
+    behavior: RuleProviderBehavior;
+    payload: readonly string[];
+}
+
+export type RuleProvider = HttpRuleProvider | InlineRuleProvider;
 
 export interface GeoxUrl {
     geoip?: string;

@@ -17,6 +17,8 @@ https://github.com/powerfullz/override-rules
 - adblock: 去广告规则（0=关闭，1=adrules.top，2=217heidai，3=AWAvenue，默认 3）
 
 源码位于 `src/`，入口为 `src/main.ts`。
+可见策略：直连、国外、AI、自定义直连；自定义匹配条件维护于 src/catalog/custom-direct.ts。
+始终启用按需进程识别；自定义清单优先于 QUIC 限制、广告和自动分类。
 */
 
 import { buildFeatureFlags } from "./args/parse";
