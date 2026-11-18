@@ -74,7 +74,8 @@ flowchart TD
 | `src/catalog/group-names.ts` | 代理组名称与命名辅助 | `PROXY_GROUPS`, `NODE_SUFFIX`, `countryGroupName()` |
 | `src/catalog/countries.ts` | 国家/地区元数据；派生匹配正则 | `countriesMeta`, `countryRegexMap`, `countryExcludeRegexMap` |
 | `src/catalog/low-cost.ts` | 低倍率节点匹配器 | `LOW_COST_NODE_MATCHER` |
-| `src/catalog/service-groups.ts` | 服务代理组的声明式目录 | `serviceGroups` |
+| `src/catalog/service-groups.ts` | 四个可见分流策略的声明式目录 | `serviceGroups` |
+| `src/catalog/custom-direct.ts` | 自定义域名、IP/CIDR、进程匹配清单 | `CUSTOM_DIRECT_RULES` |
 | `src/catalog/rule-sets.ts` | Rule Provider 注册表（强类型键） | `ruleSets`, `RuleSetKey`, `ruleSet()` |
 | `src/analysis/classify.ts` | 节点多维度分类 | `analyzeNodes()` |
 | `src/analysis/active-countries.ts` | 地区阈值过滤与权重排序 | `getActiveCountryNames()` |
@@ -113,7 +114,7 @@ flowchart TD
 - 包含 `dialer-proxy: "前置代理"` 字段的节点 → **落地节点**（目标/出口节点），归入「落地节点」组
 - 其余所有节点 → **非落地节点**（中继/普通节点），归入国家地区分组和「前置代理」组
 
-变量 `landing` 为 `true` 当且仅当存在落地节点（`landingNodes.length > 0`）。只要出现落地节点，就会生成「落地节点」与「前置代理」组；全落地时地区分类为空，「前置代理」组仅保留 `DIRECT`。地区与低倍率分类始终只扫描非落地节点。
+变量 `landing` 为 `true` 当且仅当存在落地节点（`landingNodes.length > 0`）。只要出现落地节点，就会生成「落地节点」与「前置代理」组；全落地时地区分类为空，「前置代理」组仅保留 `DIRECT`。地区与低倍率分类始终只扫描非落地节点；链式辅助组隐藏。
 
 ### 节点分类
 
@@ -126,14 +127,26 @@ flowchart TD
 
 这些分类维度相互独立，构建阶段通过组合它们来生成完整的代理组树。
 
-分类结果还会派生 `regionLayout`：通过 `threshold` 的地区数 ≥ 2 时为 `grouped`，为每个地区生成 `${地区}节点` 组，并保留「手动选择」组；不足 2 个时为 `flattened`，不生成任何地区组，`选择代理`、`自动选择`、`故障转移` 直接引用非落地节点（不含 Tailscale），同时不再生成与 `选择代理` 高度重合的「手动选择」组。服务组同样按 `regionLayout.groupedCountries` 判断目标地区组是否存在，避免引用已展平的地区组；展平模式下服务组的 `defaultProxies` / `defaultProxiesDirect` 也不再引用 `选择代理`，而是直接携带同一份展平节点来源。若存在「低倍率节点」组，「静态资源」组会将其置于候选首位，其余候选保持正常顺序。
+分类结果还会派生 `regionLayout`：通过 `threshold` 的地区数 ≥ 2 时为 `grouped`，生成隐藏的地区组与「手动选择」组；不足 2 个时为 `flattened`，「国外」「AI」「自动选择」「故障转移」直接引用非落地节点，不生成地区或手动选择组。空候选仍统一交给代理组工厂补 `DIRECT`。
+
+### 四策略分流
+
+`service-groups.ts` 是可见策略的唯一目录，顺序为「直连」「国外」「AI」「自定义直连」。其余地区、测速、低倍率、链式代理、Tailscale 及 GLOBAL 组均设置 `hidden: true`，保留为出口候选或定向路由使用。
+
+「国外」与「AI」在两种布局下都提供直接节点候选，避免手选依赖隐藏的辅助组。`regex=true` 时使用 `include-all` 并排除落地节点和 Tailscale，普通模式按订阅顺序枚举。
+
+`custom-direct.ts` 是自定义清单的唯一来源，通过 `CustomDirect` inline/classical Rule Provider 内嵌至配置，不依赖远程下载。域名、IP 和进程条件统一指向「自定义直连」，默认选择「直连」。引用附加 `no-resolve`，IP 条件只使用已知目标地址，域名和进程条件正常匹配。
+
+路由顺序为：自定义直连 → 可选 QUIC 拒绝 → 可选 Tailscale → 内网直连 → 可选广告拒绝 → AI → 国内域名直连 → 国内 IP 直连 → 国外兜底。原有服务规则与 GFWList、CDN 等 Provider 已移除，服务按 AI/国内/国外三个类别处理。
+
+`assembleConfig()` 始终输出 `find-process-mode: strict`，使本机微信等进程条件在 `full=true` 与 `full=false` 下均可工作；`full-config.ts` 不再独立设置此字段。
 
 ### Tailscale 集成
 
 当订阅中存在 `type: "tailscale"` 的节点时，脚本会：
 
 - 创建只包含 Tailscale 节点的「Tailscale」代理组（默认 `hidden: true`）；
-- 将 Tailscale 节点从「手动选择」、展平模式下的 `选择代理` / `自动选择` / `故障转移` / 服务组、地区组、低倍率组及「前置代理」等常规候选中排除（`regex=true` 时通过 `exclude-filter` 排除）；
+- 将 Tailscale 节点从「手动选择」、展平模式下的 `国外` / `自动选择` / `故障转移` / 服务组、地区组、低倍率组及「前置代理」等常规候选中排除（`regex=true` 时通过 `exclude-filter` 排除）；
 - 为 `100.64.0.0/10`、`fd7a:115c:a1e0::/48` 和 `ts.net` 添加定向分流规则；
 - Tailscale 存在时不排除对应地址段，使其能够交由 Tailscale 代理组处理；不存在时则排除这些地址段，避免无效的路由进入 TUN。
 

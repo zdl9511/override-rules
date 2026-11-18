@@ -44,6 +44,28 @@ export const ARG_DEFAULTS = {
 } as const;
 ```
 
+## 维护自定义直连清单
+
+编辑 `src/catalog/custom-direct.ts` 的 `CUSTOM_DIRECT_RULES`。每行是一个 Mihomo classical 匹配条件，数组中的字符串以逗号分隔：
+
+```typescript
+export const CUSTOM_DIRECT_RULES: readonly string[] = [
+    "DOMAIN-SUFFIX,example.com",       // 包含该域名及其子域名
+    "DOMAIN,api.example.net",          // 仅完整域名
+    "IP-CIDR,203.0.113.10/32",         // 单个 IPv4
+    "IP-CIDR,198.51.100.0/24",         // IPv4 网段
+    "IP-CIDR6,2001:db8::/32",          // IPv6 网段
+    "PROCESS-NAME,Weixin.exe",         // Windows 微信新版
+    "PROCESS-NAME,WeChat.exe",         // Windows 微信旧版
+];
+```
+
+域名填写主机名即可，IP 使用 CIDR 格式，进程填写实际可执行文件名。清单中只填写匹配条件，策略名称由构建逻辑统一追加。配置通过 inline Rule Provider 嵌入，因此修改清单后需要重新构建并载入覆写；本地文件的修改不会自动更新已经导入客户端的脚本。
+
+清单优先于 QUIC、广告、AI 和国内分类。「自定义直连」默认选择「直连」，也能在客户端切到「国外」。IP 清单使用 `no-resolve`，只匹配连接已知的目标 IP；需要按域名稳定直连时，可同时加入对应域名。
+
+进程分流要求流量经过本机 Mihomo。脚本统一开启 `find-process-mode: strict`，客户端需保留此设置；在路由器上无法识别其他设备的进程名。
+
 ## 调整代理组
 
 如果你需要调整生成的代理组（Proxy Groups），或需要添加新的国家/地区节点分组，请编辑 `src/catalog/group-names.ts`、`src/catalog/icons.ts` 与 `src/catalog/service-groups.ts`。
@@ -70,7 +92,7 @@ export const ICONS = {
 
 **定义新的服务代理组：**
 
-服务代理组采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
+当前仅有「直连」「国外」「AI」「自定义直连」四个可见策略，其余辅助组隐藏。可见策略采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
 
 ```typescript
 // src/catalog/service-groups.ts
@@ -87,7 +109,7 @@ export const serviceGroups: ServiceGroupDef[] = [
 
 ## 调整国家/地区匹配规则
 
-脚本会根据`countriesMeta`自动生成实际存在的代理组，因此只需修改国家/地区元数据即可。
+脚本会根据 `countriesMeta` 自动生成隐藏的地区辅助组，供「国外」与「AI」选择出口，因此只需修改国家/地区元数据即可。
 
 在 `src/catalog/countries.ts` 的 `countriesMeta` 中，你可以修改节点的正则匹配 `pattern` 以及代理组显示的 `icon`。`weight` 用于控制代理组在列表中的排序（越小越靠前）。
 
@@ -131,7 +153,7 @@ import { ruleSet } from "../catalog/rule-sets";
 
 // 在 buildRules() 返回的数组中：
 ruleSet("exampleProvider", PROXY_GROUPS.MY_CUSTOM_GROUP),
-// 如果没有在 group-names 中添加新代理组，也可以直接用 PROXY_GROUPS.SELECT 等
+// 如果没有在 group-names 中添加新代理组，也可以直接用 PROXY_GROUPS.FOREIGN 等
 ```
 
 ### 使用 GeoSite 数据库
@@ -142,7 +164,7 @@ ruleSet("exampleProvider", PROXY_GROUPS.MY_CUSTOM_GROUP),
 // src/builders/rules.ts
 // 在 buildRules() 返回的数组中！
 `GEOSITE,CATEGORY-PORN,${PROXY_GROUPS.MY_CUSTOM_GROUP}`,    // 示例：添加成人内容集合，GeoSite 规则大小写不敏感。
-// 如果没有在 group-names 中添加新代理组，也可以直接用现有的 PROXY_GROUPS.SELECT 等
+// 如果没有在 group-names 中添加新代理组，也可以直接用现有的 PROXY_GROUPS.FOREIGN 等
 ```
 
 ## 构建并使用你的定制脚本
@@ -161,9 +183,21 @@ npm test
 npm run artifacts
 ```
 
-**重要**：本项目已经配置了 GitHub Actions 来自动处理构建和发布，所有的产物（包括 `.js` 脚本和 `.yaml` 配置文件）会被自动构建并部署到 `dist` 分支。因此，**请勿直接将本地生成的产物推送到主分支**。
+本项目通过 GitHub Actions 构建 `.js` 和 `.yaml` 产物：预览构建更新 `preview` 分支，正式发布更新 `dist` 分支。本地主分支仅提交源码、测试和文档。
 
-请按照以下步骤发布并使用你的定制版本：
+### 推送源码后自动生成预览
+
+将 `src/` 或 `scripts/` 的修改推送到 `main` 后，`.github/workflows/preview.yaml` 自动构建，并由 GitHub Actions 更新 `preview` 分支，无需创建版本 Tag。Fork 仓库需先启用 Actions；在客户端使用自己仓库的产物地址：
+
+```text
+https://raw.githubusercontent.com/你的用户名/override-rules/refs/heads/preview/convert.min.js
+```
+
+Actions 的 `Deploy Preview` 成功后，刷新客户端中的覆写脚本并重新生成配置。推送开发分支本身不会触发这个工作流。
+
+### 正式版本发布
+
+正式发布遵循项目 `AGENTS.md` 的维护者授权约定。以下流程由有权发布的维护者执行：
 
 1. **启用 GitHub Actions**：由于你使用的是 Fork 后的仓库，请前往你仓库的 **Actions** 标签页，点击 "I understand my workflows, go ahead and enable them" 以启用自动化工作流。
 2. **提交代码**：将你修改后的源码（如 `src/` 下的内容）提交并推送到你的 GitHub 仓库。
