@@ -2,8 +2,6 @@
  * 最终配置组装：将节点、代理组、规则、DNS、TUN、Geo 数据源及上游字段拼装为最终 `ClashConfig`。
  */
 
-import { PROXY_GROUPS } from "../catalog/group-names";
-import { ICONS } from "../catalog/icons";
 import { adblockAlternatives, ruleSets } from "../catalog/rule-sets";
 import { buildDns } from "./dns";
 import { buildFullConfig } from "./full-config";
@@ -14,22 +12,6 @@ import { buildTunConfig } from "./tun";
 import type { FeatureFlags } from "../types/args";
 import type { ClashConfig } from "../types/clash";
 import type { NodeAnalysis, ProxyGroup } from "../types/proxy";
-
-/**
- * 追加 GLOBAL 代理组：其候选为它之前的所有代理组。
- */
-function appendGlobalGroup(groups: ProxyGroup[]): ProxyGroup[] {
-    const global: ProxyGroup = {
-        name: PROXY_GROUPS.GLOBAL,
-        icon: ICONS.global,
-        "include-all": true,
-        type: "select",
-        hidden: true,
-        proxies: groups.map((group) => String(group.name)),
-    };
-
-    return [...groups, global];
-}
 
 /** 组装最终配置所需的上下文数据。 */
 export interface AssembleConfigInput {
@@ -65,7 +47,7 @@ export function assembleConfig(
         ...(config.hosts !== undefined && { hosts: config.hosts }),
         ...(flags.fullConfig && buildFullConfig(flags)),
         "find-process-mode": "strict",
-        "proxy-groups": appendGlobalGroup(proxyGroups),
+        "proxy-groups": proxyGroups,
         "rule-providers": {
             ...baseRuleSets,
             ...(adblockProvider && { ADBlock: adblockProvider, AdditionalFilter }),

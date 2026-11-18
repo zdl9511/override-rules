@@ -1,141 +1,33 @@
-/**
- * 代理组组装：先输出四个可见策略，再追加隐藏的节点选择辅助组。
- *
- * 各类代理组的定义分别位于：
- * - 服务组：`catalog/service-groups.ts`
- * - 地区元数据：`catalog/countries.ts`
- * - 构造工厂：`domain/proxy-group.ts`
- */
+/** 四个分流策略直接引用原始节点；仅按需保留链式代理和 Tailscale 路由组。 */
 
-import { countriesMeta } from "../catalog/countries";
-import { countryGroupName, PROXY_GROUPS } from "../catalog/group-names";
+import { PROXY_GROUPS } from "../catalog/group-names";
 import { ICONS } from "../catalog/icons";
-import { LOW_COST_NODE_MATCHER } from "../catalog/low-cost";
 import { serviceGroups } from "../catalog/service-groups";
-import {
-    buildGroupByType,
-    fallbackGroup,
-    selectAllGroup,
-    selectGroup,
-    urlTestGroup,
-} from "../domain/proxy-group";
-import { isNotNull } from "../utils/primitives";
-import { buildNodeExcludeFilter, combineExcludeFilters } from "../utils/regex";
+import { selectGroup } from "../domain/proxy-group";
 import type { GroupBuildContext, ProxyGroup } from "../types/proxy";
 
-/** 顶层选择类代理组：手动选择以及链式代理辅助组。 */
-function buildFrontGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
-    // 展平模式下「国外」已直接列出全部非落地节点，不再生成高度重合的「手动选择」组。
-    // 分组模式保留该组：regex 模式交给内核动态填充，否则按上游顺序枚举。
-    let manualGroup: ProxyGroup | null = null;
-    if (ctx.nodes.regionLayout.mode === "grouped") {
-        manualGroup = ctx.flags.regexFilter
-            ? selectAllGroup(
-                  PROXY_GROUPS.MANUAL,
-                  ICONS.manual,
-                  buildNodeExcludeFilter(ctx.nodes.tailscaleNodes)
-              )
-            : selectGroup(PROXY_GROUPS.MANUAL, ICONS.manual, ctx.nodes.manualNames);
-    }
-
-    return [
-        manualGroup,
-        ctx.nodes.landing
-            ? selectGroup(PROXY_GROUPS.FRONT_PROXY, ICONS.frontProxy, ctx.lists.frontProxySelector)
-            : null,
-        ctx.nodes.landing
-            ? selectGroup(
-                  PROXY_GROUPS.LANDING,
-                  ICONS.landing,
-                  ctx.nodes.landingNodes.map((node) => node.name)
-              )
-            : null,
-    ];
-}
-
-/** 由声明式目录生成的服务代理组。 */
-function buildServiceGroups(ctx: GroupBuildContext): ProxyGroup[] {
-    return serviceGroups.map((def) => selectGroup(def.name, def.icon, def.proxies(ctx)));
-}
-
-/** 尾部辅助组：Tailscale、自动选择、故障转移。 */
-function buildTailGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
-    return [
-        ctx.nodes.hasTailscale
-            ? selectGroup(
-                  PROXY_GROUPS.TAILSCALE,
-                  ICONS.tailscale,
-                  ctx.nodes.tailscaleNodes.map((node) => node.name),
-                  false,
-                  true
-              )
-            : null,
-        urlTestGroup(PROXY_GROUPS.AUTO, ICONS.auto, ctx.lists.defaultFallback),
-        fallbackGroup(PROXY_GROUPS.FALLBACK, ICONS.fallback, ctx.lists.defaultFallback),
-    ];
-}
-
-/** 低倍率组与各地区组。 */
-function buildRegionGroups(ctx: GroupBuildContext): Array<ProxyGroup | null> {
-    const { flags, nodes } = ctx;
-    const hasLowCost = nodes.lowCostNodes.length > 0 || flags.regexFilter;
-    const tailscaleExcludeFilter = buildNodeExcludeFilter(nodes.tailscaleNodes);
-
-    const lowCostGroup = hasLowCost
-        ? buildGroupByType({
-              name: PROXY_GROUPS.LOW_COST,
-              icon: ICONS.lowCost,
-              groupType: flags.groupType,
-              nodeSource: !flags.regexFilter
-                  ? { proxies: nodes.lowCostNodes.map((node) => node.name) }
-                  : {
-                        "include-all": true as const,
-                        filter: LOW_COST_NODE_MATCHER.pattern,
-                        ...(tailscaleExcludeFilter
-                            ? { "exclude-filter": tailscaleExcludeFilter }
-                            : {}),
-                    },
-          })
-        : null;
-
-    const countryGroups = nodes.regionLayout.groupedCountries.map((country) => {
-        const meta = countriesMeta[country];
-
-        const excludeFilter = combineExcludeFilters(meta.excludePattern, tailscaleExcludeFilter);
-        const nodeSource = flags.regexFilter
-            ? {
-                  "include-all": true as const,
-                  filter: meta.pattern,
-                  ...(excludeFilter ? { "exclude-filter": excludeFilter } : {}),
-              }
-            : { proxies: nodes.countryNodes[country].map((node) => node.name) };
-
-        return buildGroupByType({
-            name: countryGroupName(country),
-            icon: meta.icon,
-            groupType: flags.groupType,
-            nodeSource,
-        });
-    });
-
-    return [lowCostGroup, ...countryGroups];
-}
-
-/**
- * 组装完整的代理组列表。
- * @param ctx - 代理组构建上下文
- * @returns 代理组数组（不含 GLOBAL，GLOBAL 由 `builders/config.ts` 追加）
- */
 export function buildProxyGroups(ctx: GroupBuildContext): ProxyGroup[] {
-    const helpers: Array<ProxyGroup | null> = [
-        ...buildFrontGroups(ctx),
-        ...buildTailGroups(ctx),
-        ...buildRegionGroups(ctx),
-    ];
+    const groups = serviceGroups.map((def) => selectGroup(def.name, def.icon, def.proxies(ctx)));
 
-    // 辅助组仍可作为四个策略的候选，客户端主列表只展示分流策略。
-    return [
-        ...buildServiceGroups(ctx),
-        ...helpers.filter(isNotNull).map((group) => ({ ...group, hidden: true })),
-    ];
+    if (ctx.nodes.hasFrontProxy) {
+        groups.push(
+            selectGroup(
+                PROXY_GROUPS.FRONT_PROXY,
+                ICONS.frontProxy,
+                ctx.lists.frontProxySelector,
+                true
+            )
+        );
+    }
+    if (ctx.nodes.hasTailscale) {
+        groups.push(
+            selectGroup(
+                PROXY_GROUPS.TAILSCALE,
+                ICONS.tailscale,
+                ctx.nodes.tailscaleNodes.map((node) => node.name),
+                true
+            )
+        );
+    }
+    return groups;
 }

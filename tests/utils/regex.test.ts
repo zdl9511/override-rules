@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 
-import { buildNodeExcludeFilter, combineExcludeFilters } from "../../src/utils/regex";
+import { buildNodeExcludeFilter } from "../../src/utils/regex";
 
 describe("buildNodeExcludeFilter", () => {
     it("无有效节点名时返回 undefined", () => {
@@ -17,21 +17,6 @@ describe("buildNodeExcludeFilter", () => {
                 { name: "节点B" },
             ]),
             "^(?:Tailscale\\(A\\.1\\)|节点B)$"
-        );
-    });
-});
-
-describe("combineExcludeFilters", () => {
-    it("仅保留存在的过滤规则", () => {
-        assert.equal(combineExcludeFilters(undefined, undefined), undefined);
-        assert.equal(combineExcludeFilters("base", undefined), "base");
-        assert.equal(combineExcludeFilters(undefined, "extra"), "extra");
-    });
-
-    it("用或运算合并两段规则", () => {
-        assert.equal(
-            combineExcludeFilters("美属|法属", "^(?:Tailscale出口)$"),
-            "美属|法属|^(?:Tailscale出口)$"
         );
     });
 });

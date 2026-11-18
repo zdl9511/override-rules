@@ -1,4 +1,4 @@
-/** 四个面向用户的分流策略；节点选择辅助组由构建层隐藏。 */
+/** 可见策略按此顺序输出，国外与 AI 共用订阅原始节点候选。 */
 
 import { PROXY_GROUPS } from "./group-names";
 import { ICONS } from "./icons";
@@ -17,18 +17,18 @@ export const serviceGroups: ServiceGroupDef[] = [
         proxies: () => ["DIRECT"],
     },
     {
+        name: PROXY_GROUPS.CUSTOM_DIRECT,
+        icon: ICONS.direct,
+        proxies: () => [PROXY_GROUPS.DIRECT, PROXY_GROUPS.FOREIGN],
+    },
+    {
         name: PROXY_GROUPS.FOREIGN,
         icon: ICONS.select,
-        proxies: (ctx) => ctx.lists.defaultSelector,
+        proxies: (ctx) => ctx.lists.proxySelector,
     },
     {
         name: PROXY_GROUPS.AI,
         icon: ICONS.aiService,
-        proxies: (ctx) => ctx.lists.defaultProxies,
-    },
-    {
-        name: PROXY_GROUPS.CUSTOM_DIRECT,
-        icon: ICONS.direct,
-        proxies: () => [PROXY_GROUPS.DIRECT, PROXY_GROUPS.FOREIGN],
+        proxies: (ctx) => ctx.lists.proxySelector,
     },
 ];

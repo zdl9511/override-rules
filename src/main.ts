@@ -3,8 +3,6 @@ powerfullz 的 Substore 订阅转换脚本
 https://github.com/powerfullz/override-rules
 
 支持的传入参数：
-- grouptype: 地区代理组类型（0=select 手动选择, 1=url-test 自动测速, 2=load-balance 负载均衡，默认 1）
-  - 向后兼容：若未传 grouptype 但传了 loadbalance，则 loadbalance=true 映射为 grouptype=2，loadbalance=false 映射为 grouptype=1
 - landing: 自动检测带 `dialer-proxy` 字段的节点，无需用户传参
 - ipv6: 启用 IPv6 支持（默认 false）
 - tun: 启用 TUN 模式（默认 false）
@@ -12,12 +10,11 @@ https://github.com/powerfullz/override-rules
 - keepalive: 启用 tcp-keep-alive（默认 false）
 - fakeip: DNS 使用 FakeIP 模式（默认 true；传 false 时为 RedirHost）
 - quic: 允许 QUIC 流量（UDP 443，默认 false）
-- threshold: 地区节点数量小于该值时不显示分组（默认 2）
-- regex: 使用正则过滤模式（include-all + filter）写入各地区代理组，而非直接枚举节点名称（默认 false）
+- regex: 通过 include-all 动态载入原始节点，排除 Tailscale（默认 false）
 - adblock: 去广告规则（0=关闭，1=adrules.top，2=217heidai，3=AWAvenue，默认 3）
 
 源码位于 `src/`，入口为 `src/main.ts`。
-可见策略：直连、国外、AI、自定义直连；自定义匹配条件维护于 src/catalog/custom-direct.ts。
+可见策略：直连、自定义直连、国外、AI；自定义匹配条件维护于 src/catalog/custom-direct.ts。
 始终启用按需进程识别；自定义清单优先于 QUIC 限制、广告和自动分类。
 */
 
@@ -43,7 +40,7 @@ function readRawArgs(): ScriptArgs {
 /**
  * 覆写脚本入口。
  *
- * 流程：解析参数 → 节点分类 → 构建候选列表 → 构建代理组 → 组装最终配置。
+ * 流程：解析参数 → 识别链式代理和 Tailscale → 构建原始节点候选 → 构建代理组 → 组装最终配置。
  * @param config - 上游订阅配置
  */
 function main(config: ClashConfig): ClashConfig {
@@ -52,17 +49,9 @@ function main(config: ClashConfig): ClashConfig {
     }
 
     const flags = buildFeatureFlags(readRawArgs());
-    const nodes = analyzeNodes(config.proxies, flags.countryThreshold);
-    const lists = buildBaseLists({
-        landing: nodes.landing,
-        landingNodes: nodes.landingNodes,
-        lowCostNodes: nodes.lowCostNodes,
-        nonLandingNodes: nodes.nonLandingNodes,
-        tailscaleNodes: nodes.tailscaleNodes,
-        regexFilter: flags.regexFilter,
-        regions: nodes.regionLayout,
-    });
-    const proxyGroups = buildProxyGroups({ flags, nodes, lists });
+    const nodes = analyzeNodes(config.proxies);
+    const lists = buildBaseLists(nodes, flags.regexFilter);
+    const proxyGroups = buildProxyGroups({ nodes, lists });
 
     return assembleConfig(config, { flags, nodes, proxyGroups });
 }
