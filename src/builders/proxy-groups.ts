@@ -1,4 +1,4 @@
-/** 四个分流策略直接引用原始节点；仅按需保留链式代理和 Tailscale 路由组。 */
+/** 四个可见分流策略直接引用原始节点；内核入口及必要路由组隐藏。 */
 
 import { PROXY_GROUPS } from "../catalog/group-names";
 import { ICONS } from "../catalog/icons";
@@ -29,5 +29,14 @@ export function buildProxyGroups(ctx: GroupBuildContext): ProxyGroup[] {
             )
         );
     }
+    // 内核会自动补建 GLOBAL；显式设置 hidden，避免客户端追加到可见策略中。
+    groups.push(
+        selectGroup(
+            PROXY_GROUPS.GLOBAL,
+            ICONS.select,
+            groups.map((group) => group.name),
+            true
+        )
+    );
     return groups;
 }

@@ -6,4 +6,5 @@ export const PROXY_GROUPS = {
     AI: "AI",
     FRONT_PROXY: "前置代理",
     TAILSCALE: "Tailscale",
+    GLOBAL: "GLOBAL",
 } as const;

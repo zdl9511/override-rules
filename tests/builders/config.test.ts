@@ -32,15 +32,40 @@ const CONFIG: ClashConfig = {
 };
 
 describe("assembleConfig", () => {
-    it("只生成直连、自定义直连、国外、AI，顺序固定", () => {
+    it("只显示直连、自定义直连、国外、AI，顺序固定", () => {
         const result = run({}, CONFIG);
         assert.deepEqual(
-            result["proxy-groups"]?.map((item) => item.name),
+            result["proxy-groups"]?.filter((item) => !item.hidden).map((item) => item.name),
             ["直连", "自定义直连", "国外", "AI"]
         );
         assert.deepEqual(group(result, PROXY_GROUPS.DIRECT)?.proxies, ["DIRECT"]);
         assert.deepEqual(group(result, PROXY_GROUPS.CUSTOM_DIRECT)?.proxies, ["直连", "国外"]);
-        assert.ok(result["proxy-groups"]?.every((item) => item.type === "select" && !item.hidden));
+        assert.ok(result["proxy-groups"]?.every((item) => item.type === "select"));
+    });
+
+    it("显式隐藏 GLOBAL，保留其余组的展示顺序并避免自引用", () => {
+        const result = run(
+            {},
+            {
+                proxies: [
+                    { name: "NodeA" },
+                    { name: "落地A", "dialer-proxy": "前置代理" },
+                    { name: "Tailscale出口", type: "tailscale" },
+                ],
+            }
+        );
+        const global = group(result, PROXY_GROUPS.GLOBAL);
+        assert.ok(global);
+        assert.equal(global.hidden, true);
+        assert.deepEqual(global.proxies, [
+            "直连",
+            "自定义直连",
+            "国外",
+            "AI",
+            "前置代理",
+            "Tailscale",
+        ]);
+        assert.equal(result["proxy-groups"]?.at(-1)?.name, PROXY_GROUPS.GLOBAL);
     });
 
     it("国外和 AI 只显示原始节点，保留名称及订阅顺序", () => {
