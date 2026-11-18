@@ -1,5 +1,7 @@
 # 草案：地区节点组的展平与空缺处理
 
+> 历史设计草稿：当前已取消地区与测速辅助分组，实际行为以 [架构文档](../ARCHITECTURE.md) 为准。
+
 > 状态：**已实现**。关联 issue：[#64](https://github.com/powerfullz/override-rules/issues/64)
 
 ## 背景

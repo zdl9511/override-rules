@@ -40,7 +40,7 @@ npm run format:check && npm run lint && npm run typecheck && npm test && npm run
 
 ## 1. 这是什么
 
-本项目为 **Mihomo/Clash 订阅覆写工具**：读取上游订阅的代理节点，按落地/非落地、国家/地区、低倍率、Tailscale 等维度分类，再生成代理组、分流规则、DNS、TUN 等配置。
+本项目为 **Mihomo/Clash 订阅覆写工具**：读取上游订阅的代理节点，保留原始节点，仅识别链式代理与 Tailscale，再生成四个分流策略、分流规则、DNS、TUN 等配置。
 
 项目同时产出两种形式：
 
@@ -85,9 +85,9 @@ $arguments
 | --- | --- |
 | `src/main.ts` | JS 覆写入口；读取 `$arguments`、编排流程、暴露 `globalThis.main` |
 | `src/args/` | URL 参数解析；默认值的唯一来源是 `schema.ts` |
-| `src/analysis/` | 节点分类：落地/非落地、国家/地区、低倍率、Tailscale |
+| `src/analysis/` | 识别链式代理与 Tailscale，保留原始节点顺序 |
 | `src/builders/` | 纯构建函数：候选列表、代理组、规则、DNS、TUN、最终配置 |
-| `src/catalog/` | 声明式数据：组名、图标、国家元数据、服务组、规则集、DNS 常量 |
+| `src/catalog/` | 声明式数据：组名、图标、服务组、自定义直连、规则集、DNS 常量 |
 | `src/domain/` | 代理组工厂；字段顺序与空候选兜底集中在此 |
 | `src/types/` | 按域拆分的类型定义：`args` / `proxy` / `clash` |
 | `src/utils/` | 无业务状态的通用工具函数 |
@@ -169,7 +169,7 @@ $arguments
 - `describe` / `it` 的描述沿用现有风格，使用简洁中文说明行为。
 - 以下改动应补充或更新测试：
   - 参数解析与默认值（`tests/args/`）
-  - 节点分类与地区阈值（`tests/analysis/`）
+  - 原始节点候选与链式代理、Tailscale 识别（`tests/analysis/`）
   - 代理组构造、字段顺序、空组兜底（`tests/builders/`、`tests/domain/`）
   - 规则、DNS、TUN、最终配置组装（`tests/builders/`）
 - 测试不应依赖已生成的 `convert.js` 或 `yamls/`；直接 import 源码模块。
@@ -181,10 +181,10 @@ $arguments
 | 需求 | 修改位置 | 需要同步 |
 | --- | --- | --- |
 | 新增/修改 URL 参数 | `src/types/args.ts`、`src/args/schema.ts`、`src/args/parse.ts` | `README.md` 参数说明、`src/main.ts` 顶部 banner、`tests/args/parse.test.ts` |
-| 修改参数默认值 | `grouptype` / `threshold` / `fakeip` 改 `src/args/schema.ts`；布尔开关默认值在 `src/args/parse.ts` 的 `buildFeatureFlags()` | 若默认行为变化，更新 `README.md` 与 `docs/ARCHITECTURE.md` |
+| 修改参数默认值 | 统一修改 `src/args/schema.ts` 的 `ARG_DEFAULTS` | 若默认行为变化，更新 `README.md` 与 `docs/ARCHITECTURE.md` |
 | 新增代理组名称 | `src/catalog/group-names.ts` | 图标登记到 `src/catalog/icons.ts` |
 | 新增服务代理组 | `src/catalog/service-groups.ts` | 声明式目录，通常无需改组装逻辑 |
-| 调整国家/地区匹配或图标 | `src/catalog/countries.ts` | 必要时补测试；行为变化时更新文档 |
+| 维护自定义直连清单 | `src/catalog/custom-direct.ts` | `docs/HOW_TO_CUSTOMISE.md`，必要时补测试 |
 | 新增 Rule Provider | `src/catalog/rule-sets.ts`，再在 `src/builders/rules.ts` 中引用；自维护列表放入 `ruleset/` | 规则集键受 `RuleSetKey` 约束，改名会在编译期报错 |
 | 调整规则顺序或分流目标 | `src/builders/rules.ts` | `tests/builders/rules.test.ts` |
 | 调整代理组字段顺序或空组兜底 | `src/domain/proxy-group.ts` | `tests/domain/proxy-group.test.ts` |
@@ -219,7 +219,7 @@ $arguments
 - `catalog/` 只放声明式数据，`builders/` 只放无状态构建逻辑，`main.ts` 只做流程编排。
 - 代理组的字段顺序由 `src/domain/proxy-group.ts` 的工厂函数统一保证，不要在调用处随意调整。
 - 空候选组补 `DIRECT` 的兜底逻辑集中在 `src/domain/proxy-group.ts`，不要重复实现。
-- `"节点"` 后缀只在展示层（`buildBaseLists()` / `buildProxyGroups()`）通过 `countryGroupName()` 拼接，分类层不涉及。
+- 原始节点名称与订阅顺序保持不变，国外与 AI 共用 `proxySelector`；测速后的显示排序由客户端控制。
 - 规则集引用统一通过 `ruleSet(key, target)` 生成，保持 `RuleSetKey` 的编译期约束。
 - 类型按域拆分，不要把新类型都堆进单个全局文件。
 

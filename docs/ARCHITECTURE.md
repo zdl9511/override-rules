@@ -1,224 +1,132 @@
 # override-rules 架构文档
 
-本项目是一个 Mihomo/Clash 订阅覆写脚本。它拦截上游订阅配置中的代理节点，按落地/非落地、国家和地区进行多维度分类，并按照预设的规则与策略组将其重组为优化后的 Clash 配置——包含代理组、路由规则、DNS 及 TUN 支持。
+本项目为 Mihomo/Clash 订阅覆写工具，保留上游原始节点，生成「直连」「自定义直连」「国外」「AI」四个分流策略，以及规则、DNS 和 TUN 配置。节点分析仅识别链式代理与 Tailscale。
 
-源码采用「声明式数据 / 纯构建逻辑 / 组装入口」三层结构：`catalog/` 存放可独立修改的数据，`builders/` 存放不持有状态的纯函数，`main.ts` 只做流程编排。
+源码分为声明式数据、纯构建逻辑和入口编排三层：`catalog/` 放数据，`builders/` 放无状态构建函数，`main.ts` 编排流程。
 
----
-
-## 数据流概览
-
-整个覆写脚本的核心流程分为五个阶段：**输入** → **参数解析** → **节点分类** → **配置构建** → **最终组装**。
+## 数据流
 
 ```mermaid
 flowchart TD
-    subgraph Input["1. 输入"]
-        CP["config.proxies (ProxyNode[])"]
-        UP["上游 hosts / dns"]
-        RA["rawArgs (来自 $arguments)"]
-    end
-
-    subgraph Args["2. 参数解析 (src/args)"]
-        RA --> BFF["buildFeatureFlags()"]
-        BFF --> FF["FeatureFlags"]
-    end
-
-    subgraph Parser["3. 节点多维度分类 (src/analysis)"]
-        CP --> AN["analyzeNodes()"]
-        AN --> NA["NodeAnalysis<br/>(landing / countryNodes / lowCost / tailscale)"]
-    end
-
-    subgraph Builders["4. 配置构建 (src/builders + src/catalog)"]
-        NA --> BBL["buildBaseLists()"]
-        NA --> BPG["buildProxyGroups()"]
-        FF --> BPG
-        BBL --> BL["BaseLists"]
-        BL --> BPG
-        BPG --> PG["proxy-groups"]
-    end
-
-    subgraph Output["5. 最终组装 (src/main.ts + builders/config.ts)"]
-        PG --> AC["assembleConfig()"]
-        FF --> AC
-        NA --> AC
-        UP --> AC
-        AC --> FINAL["ClashConfig"]
-    end
+    A["$arguments"] --> B["buildFeatureFlags()"]
+    C["config.proxies"] --> D["analyzeNodes()"]
+    D --> E["buildBaseLists()"]
+    B --> E
+    D --> F["buildProxyGroups()"]
+    E --> F
+    F --> G["assembleConfig()"]
+    B --> G
+    D --> G
+    H["上游 hosts / dns"] --> G
+    G --> I["ClashConfig"]
 ```
 
-### 各阶段职责
-
-| 阶段 | 核心模块 | 职责 |
-|------|----------|------|
-| 输入 | — | 上游订阅传入的代理节点列表 (`config.proxies`)、可继承的 `hosts`/DNS 字段与用户提供的 URL 覆写参数 (`$arguments`) |
-| 参数解析 | `src/args/` | 将原始字符串参数转换为类型安全的 `FeatureFlags` 对象；默认值集中在 `schema.ts` |
-| 节点分类 | `src/analysis/` | 将节点按落地/非落地、所属国家/地区、低价节点和 Tailscale 类型分类；按阈值提取活跃国家名称 |
-| 配置构建 | `src/builders/` + `src/catalog/` | 先生成基础代理选择列表 (`BaseLists`)，再按声明式目录生成服务组、条件组、国家/地区组和 Tailscale 组 |
-| 最终组装 | `src/main.ts` + `src/builders/config.ts` | 将原始节点、代理组、规则、Rule Provider、DNS、TUN、Geo 数据源及必要的上游字段拼装为最终 `ClashConfig` |
-
----
+`NodeAnalysis` 是节点判定的唯一来源，后续构建函数直接使用分析结果。`GroupBuildContext` 只有 `nodes` 和 `lists`；构建代理组无需接收功能开关。
 
 ## 文件职责
 
-| 文件 | 职责 | 关键导出 |
-|------|------|----------|
-| `src/main.ts` | 覆写脚本入口（banner、`globalThis.main` 契约、流程编排） | `main()` |
-| `src/types/args.ts` | 参数与功能开关类型 | `ScriptArgs`, `FeatureFlags`, `GroupType` |
-| `src/types/proxy.ts` | 代理节点、代理组、分类结果类型 | `ProxyNode`, `ProxyGroup`, `NodeAnalysis`, `GroupBuildContext` 等 |
-| `src/types/clash.ts` | Clash 配置结构类型 | `ClashConfig`, `DnsConfig`, `TunConfig`, `SnifferConfig`, `RuleProvider` |
-| `src/args/schema.ts` | URL 参数默认值的唯一来源 | `ARG_DEFAULTS` |
-| `src/args/parse.ts` | URL 参数解析与默认值回填 | `buildFeatureFlags()` |
-| `src/catalog/endpoints.ts` | CDN 与测速端点 | `CDN_URL`, `SPEEDTEST_URL` |
-| `src/catalog/dns.ts` | DNS 默认服务器与 fake-ip 过滤域名 | `DEFAULT_NAMESERVERS`, `DEFAULT_FALLBACK_DNS`, `FAKE_IP_FILTER` |
-| `src/catalog/icons.ts` | 代理组图标集中定义 | `ICONS` |
-| `src/catalog/group-names.ts` | 代理组名称与命名辅助 | `PROXY_GROUPS`, `NODE_SUFFIX`, `countryGroupName()` |
-| `src/catalog/countries.ts` | 国家/地区元数据；派生匹配正则 | `countriesMeta`, `countryRegexMap`, `countryExcludeRegexMap` |
-| `src/catalog/low-cost.ts` | 低倍率节点匹配器 | `LOW_COST_NODE_MATCHER` |
-| `src/catalog/service-groups.ts` | 四个可见分流策略的声明式目录 | `serviceGroups` |
-| `src/catalog/custom-direct.ts` | 自定义域名、IP/CIDR、进程匹配清单 | `CUSTOM_DIRECT_RULES` |
-| `src/catalog/rule-sets.ts` | Rule Provider 注册表（强类型键） | `ruleSets`, `RuleSetKey`, `ruleSet()` |
-| `src/analysis/classify.ts` | 节点多维度分类 | `analyzeNodes()` |
-| `src/analysis/active-countries.ts` | 地区阈值过滤与权重排序 | `getActiveCountryNames()` |
-| `src/domain/proxy-group.ts` | 代理组构造工厂（字段顺序与空候选兜底集中管理） | `buildGroupByType()`, `selectGroup()`, `urlTestGroup()`, `fallbackGroup()` |
-| `src/builders/selectors.ts` | 各策略组的基础候选列表 | `buildBaseLists()` |
-| `src/builders/proxy-groups.ts` | 代理组组装（前置/服务/尾部/地区） | `buildProxyGroups()` |
-| `src/builders/rules.ts` | 路由规则构建 | `buildRules()` |
-| `src/builders/rule-set` 引用 | 规则集名称受 `RuleSetKey` 约束，改名可编译期报错 | — |
-| `src/builders/dns.ts` | DNS 核心配置生成与上游字段合并 | `buildDns()` |
-| `src/builders/sniffer.ts` | 域名嗅探配置 | `snifferConfig` |
-| `src/builders/tun.ts` | TUN 模式配置 | `buildTunConfig()` |
-| `src/builders/full-config.ts` | `full=true` 时追加的完整内核参数 | `buildFullConfig()` |
-| `src/builders/geox.ts` | GeoIP/GeoSite/MMDB/ASN 数据源地址 | `geoxUrl` |
-| `src/builders/config.ts` | 最终配置组装（含 GLOBAL 组追加） | `assembleConfig()` |
-| `src/utils/primitives.ts` | 通用工具函数 | `buildList()`, `parseBool()`, `parseNumber()`, `isNotNull()` |
-| `src/utils/regex.ts` | 正则匹配工具 | `createCaseInsensitiveNodeMatcher()` |
-| `scripts/yaml_generator/generator.ts` | 静态 YAML 覆写文件生成器 | 穷举参数组合，生成 `yamls/` 目录下的 192 个 YAML 配置文件；支持 `LIMIT_COMBOS` 限制生成数量 |
-| `tests/` | 轻量单元测试（`node --import tsx --test`） | 覆盖参数解析、节点分类、代理组构造、规则/DNS/TUN、最终组装 |
+| 路径 | 职责 |
+| --- | --- |
+| `src/main.ts` | 校验输入、读取参数、编排构建、暴露 `globalThis.main` |
+| `src/args/schema.ts` | `ARG_DEFAULTS`，所有参数默认值的唯一来源 |
+| `src/args/parse.ts` | 将 `ScriptArgs` 解析为 `FeatureFlags` |
+| `src/analysis/classify.ts` | 原始出口、前置候选与 Tailscale 识别 |
+| `src/catalog/group-names.ts` | 四策略及必要隐藏路由组的名称 |
+| `src/catalog/icons.ts` | 图标地址 |
+| `src/catalog/service-groups.ts` | 四个可见策略的顺序及候选声明 |
+| `src/catalog/custom-direct.ts` | 自定义域名、IP/CIDR、进程条件 |
+| `src/catalog/rule-sets.ts` | inline 自定义规则与可选广告规则源 |
+| `src/catalog/dns.ts` | DNS 常量 |
+| `src/builders/selectors.ts` | `BaseLists`：原始出口与链式前置候选 |
+| `src/builders/proxy-groups.ts` | 四策略及按需隐藏路由组 |
+| `src/domain/proxy-group.ts` | `selectGroup()`：统一字段顺序、候选展开、空组补 `DIRECT` |
+| `src/builders/rules.ts` | 路由顺序与目标策略 |
+| `src/builders/dns.ts` | DNS 配置及上游 DNS 字段合并 |
+| `src/builders/sniffer.ts` | 域名嗅探配置 |
+| `src/builders/tun.ts` | TUN 与路由排除地址 |
+| `src/builders/full-config.ts` | `full=true` 时的完整内核参数 |
+| `src/builders/geox.ts` | GeoIP/GeoSite/MMDB/ASN 数据源 |
+| `src/builders/config.ts` | 最终配置组装 |
+| `src/types/` | 参数、代理与 Clash 配置的分域类型 |
+| `src/utils/regex.ts` | 已识别节点名的正则转义与精确排除 |
+| `src/utils/primitives.ts` | 布尔、数值等通用解析工具 |
+| `scripts/build.mjs` | esbuild 打包动态覆写脚本 |
+| `scripts/yaml_generator/generator.ts` | 穷举 256 份静态 YAML；支持 `LIMIT_COMBOS` |
+| `tests/` | 参数、候选、代理组、规则、DNS/TUN 和组装测试 |
 
----
+## 节点与代理组
 
-## 设计决策
+### 原始节点候选
 
-### 模块化与「改一处不影响别处」
+`analyzeNodes()` 保留有名称的节点，并产出：
 
-- **声明式数据与逻辑分离**：新增/调整一个服务代理组，只需在 `catalog/service-groups.ts` 增加一条记录，无需改动组装逻辑；调整图标只需改 `catalog/icons.ts`；调整参数默认值只需改 `args/schema.ts`。
-- **规则集强类型**：`rules.ts` 中所有 `RULE-SET` 引用都通过 `ruleSet(key, target)` 生成，`key` 受 `RuleSetKey` 约束，规则集改名或拼写错误会在编译期报错。
-- **字段顺序集中管理**：代理组的键插入顺序决定 YAML 输出顺序，因此各类代理组的字段顺序统一由 `domain/proxy-group.ts` 的工厂函数保证，测试中亦有断言锁定。
-- **空代理组兜底集中管理**：`selectors.ts` 只负责生成候选列表，允许出现空列表；`domain/proxy-group.ts` 的 `normalizeNodeSource()`（以及经其处理的 `buildGroupByType()`）在既无显式 `proxies` 又未启用 `include-all` 时统一补入 `DIRECT`，确保最终不会输出空组。
-- **类型按域拆分**：`types/args.ts`、`types/proxy.ts`、`types/clash.ts` 各自独立，避免单文件成为全局改动的耦合点。
+- `proxyNodes`：所有非 Tailscale 节点，包括链式代理的落地节点，保持订阅顺序。
+- `frontProxyNodes`：从 `proxyNodes` 中排除 `dialer-proxy: "前置代理"` 的节点。
+- `tailscaleNodes`：`type: "tailscale"` 的节点。
+- `hasFrontProxy` 与 `hasTailscale`：从上述数据派生的状态。
 
-### 落地/非落地自动检测
+`buildBaseLists(nodes, regexFilter)` 生成一份共享 `proxySelector`，供「国外」与「AI」直接使用。默认显式列出原名；`regex=true` 且存在普通节点时改用 `include-all: true`，通过 `exclude-filter` 精确排除已识别的 Tailscale 名称。落地节点始终可以直接作为最终出口。
 
-`dialer-proxy` 在 Clash 链式代理中表示当前节点通过指定代理拨号。脚本据此自动区分：
-
-- 包含 `dialer-proxy: "前置代理"` 字段的节点 → **落地节点**（目标/出口节点），归入「落地节点」组
-- 其余所有节点 → **非落地节点**（中继/普通节点），归入国家地区分组和「前置代理」组
-
-变量 `landing` 为 `true` 当且仅当存在落地节点（`landingNodes.length > 0`）。只要出现落地节点，就会生成「落地节点」与「前置代理」组；全落地时地区分类为空，「前置代理」组仅保留 `DIRECT`。地区与低倍率分类始终只扫描非落地节点；链式辅助组隐藏。
-
-### 节点分类
-
-节点在进入配置构建阶段前，由 `analyzeNodes()` 经过四个独立维度的分类，产出一个 `NodeAnalysis`：
-
-1. **落地/非落地** — 决定节点归属的代理组类型。当 `landing = true` 时，后续的国家和低价节点分类只扫描非落地节点（即落地节点不参与按国家分发）。
-2. **国家/地区** — 通过正则匹配节点名称中的地理位置关键字，将节点归入对应的国家/地区分组。匹配规则定义在 `countriesMeta` 中。
-3. **低价节点** — 匹配特定正则 (`LOW_COST_NODE_MATCHER`) 的节点归入低价策略组，供用户按需选用。
-4. **Tailscale** — `type: "tailscale"` 的节点单独归入 Tailscale 代理组；只有检测到此类节点时才生成该组及对应的规则。该组默认 `hidden: true`，且 Tailscale 节点不参与国家/低价分类与常规候选列表。
-
-这些分类维度相互独立，构建阶段通过组合它们来生成完整的代理组树。
-
-分类结果还会派生 `regionLayout`：通过 `threshold` 的地区数 ≥ 2 时为 `grouped`，生成隐藏的地区组与「手动选择」组；不足 2 个时为 `flattened`，「国外」「AI」「自动选择」「故障转移」直接引用非落地节点，不生成地区或手动选择组。空候选仍统一交给代理组工厂补 `DIRECT`。
+候选为空时由代理组工厂补 `DIRECT`。启用 `include-all` 的组由内核动态填入节点。此处不生成地区、低倍率、测速、故障转移或单独的手动选择组。
 
 ### 四策略分流
 
-`service-groups.ts` 是可见策略的唯一目录，顺序为「直连」「国外」「AI」「自定义直连」。其余地区、测速、低倍率、链式代理、Tailscale 及 GLOBAL 组均设置 `hidden: true`，保留为出口候选或定向路由使用。
+`service-groups.ts` 是可见策略的唯一目录，输出顺序固定为：
 
-「国外」与「AI」在两种布局下都提供直接节点候选，避免手选依赖隐藏的辅助组。`regex=true` 时使用 `include-all` 并排除落地节点和 Tailscale，普通模式按订阅顺序枚举。
+| 顺序 | 策略 | 候选 |
+| --- | --- | --- |
+| 1 | 直连 | `DIRECT` |
+| 2 | 自定义直连 | 直连、国外 |
+| 3 | 国外 | 原始节点 |
+| 4 | AI | 原始节点 |
 
-`custom-direct.ts` 是自定义清单的唯一来源，通过 `CustomDirect` inline/classical Rule Provider 内嵌至配置，不依赖远程下载。域名、IP 和进程条件统一指向「自定义直连」，默认选择「直连」。引用附加 `no-resolve`，IP 条件只使用已知目标地址，域名和进程条件正常匹配。
+国外与 AI 独立选择出口，默认使用订阅首个节点。脚本不追加显式 `GLOBAL` 组。实时测速后的显示排序属于客户端设置，Clash Party 的 `proxyDisplayOrder: delay` 会按最新延迟升序展示节点，不改变策略顺序与已选出口；覆写脚本无法取得后续测速结果。
 
-路由顺序为：自定义直连 → 可选 QUIC 拒绝 → 可选 Tailscale → 内网直连 → 可选广告拒绝 → AI → 国内域名直连 → 国内 IP 直连 → 国外兜底。原有服务规则与 GFWList、CDN 等 Provider 已移除，服务按 AI/国内/国外三个类别处理。
+### 链式代理
 
-`assembleConfig()` 始终输出 `find-process-mode: strict`，使本机微信等进程条件在 `full=true` 与 `full=false` 下均可工作；`full-config.ts` 不再独立设置此字段。
+存在 `dialer-proxy: "前置代理"` 的节点时，额外生成隐藏的「前置代理」组，候选为 `DIRECT` 加 `frontProxyNodes`。前置候选排除落地和 Tailscale 节点，防止回到同一前置组形成循环。
 
-### Tailscale 集成
+订阅全部为落地节点时，国外与 AI 仍直接列出落地节点，前置组仅含 `DIRECT`。没有上述引用时不生成前置组。客户端需支持 `hidden` 才能隐藏辅助路由组。
 
-当订阅中存在 `type: "tailscale"` 的节点时，脚本会：
+### Tailscale
 
-- 创建只包含 Tailscale 节点的「Tailscale」代理组（默认 `hidden: true`）；
-- 将 Tailscale 节点从「手动选择」、展平模式下的 `国外` / `自动选择` / `故障转移` / 服务组、地区组、低倍率组及「前置代理」等常规候选中排除（`regex=true` 时通过 `exclude-filter` 排除）；
-- 为 `100.64.0.0/10`、`fd7a:115c:a1e0::/48` 和 `ts.net` 添加定向分流规则；
-- Tailscale 存在时不排除对应地址段，使其能够交由 Tailscale 代理组处理；不存在时则排除这些地址段，避免无效的路由进入 TUN。
+存在 Tailscale 节点时，额外生成只含这些节点的隐藏「Tailscale」组，并为 `100.64.0.0/10`、`fd7a:115c:a1e0::/48` 和 `ts.net` 添加定向规则。Tailscale 从国外、AI 与前置候选中排除。
 
-没有 Tailscale 节点时，上述代理组和分流规则不会生成；TUN 仍输出统一的基础配置，并额外排除 Tailscale 地址段与局域网地址段。
+Tailscale 存在时，TUN 不排除对应地址段；不存在时则将其与局域网地址段一起排除。没有 Tailscale 节点时不生成相关代理组和分流规则。
 
-### 数据流
+## 路由与自定义直连
 
-- **分类结果即唯一数据源**：`analyzeNodes()` 一次性返回 `NodeAnalysis`，后续构建阶段不再回读 `config.proxies`，保证判定依据可追溯。
-- **`NODE_SUFFIX` 仅在展示层添加**：`"节点"` 后缀（如「香港」→「香港节点」）只在 `buildBaseLists()` 与 `buildProxyGroups()` 中通过 `countryGroupName()` 拼接，分类层完全不涉及此概念。
-- **数据优于标志**：接收节点信息的参数统一使用具体数据（如 `landingNodes: ProxyNode[]`、`countryNodes: Record<string, ProxyNode[]>`）而非布尔值；布尔标志（如 `landing`）由数据推导得出。
+`custom-direct.ts` 是自定义清单的唯一来源，通过 `CustomDirect` inline/classical Rule Provider 内嵌到配置，无需下载。域名、IP 和进程条件统一指向「自定义直连」，默认使用「直连」，也可手动切到「国外」。`ruleSet(key, target)` 通过 `RuleSetKey` 约束规则集名称。
 
-### args 的默认值
+路由优先级：自定义直连 → 可选 QUIC 拒绝 → 可选 Tailscale → 内网直连 → 可选广告拒绝 → AI → 国内域名直连 → 国内 IP 直连 → 国外兜底。AI 以外的服务使用国内/国外分类。
 
-所有 URL 参数都有明确的默认值，集中在 `src/args/schema.ts` 的 `ARG_DEFAULTS`，由 `buildFeatureFlags()` 解析并回填。当前默认值包括：
+自定义清单引用带有 `no-resolve`，IP 条件只使用已知目标地址，域名和进程条件正常匹配。`assembleConfig()` 始终输出 `find-process-mode: strict`，供本机微信等进程规则使用；该设置不依赖 `full` 参数。
 
-- `grouptype=1`（`url-test`）；若未指定 `grouptype`，仍兼容旧的 `loadbalance` 参数；
-- `fakeip=true`；
-- `threshold=2`，少于两个节点的地区不会生成地区组；过滤后不足 2 个地区时整体展平；
-- `ipv6`、`full`、`keepalive`、`quic`、`regex`、`tun` 默认关闭。
+## 参数默认值与配置继承
 
-布尔参数接受 `true`/`false` 和 `1`/`0` 形式。
+所有默认值集中在 `ARG_DEFAULTS`：`fakeip=true`、`adblock=3`，`ipv6`、`full`、`keepalive`、`quic`、`regex`、`tun` 默认关闭。布尔参数接受 `true`/`false` 或 `1`/`0`。地区与测速分组已移除，对应的 `grouptype`、`loadbalance`、`threshold` 参数一并移除。
 
-### 上游配置继承
+配置始终保留上游 `proxies` 与 `hosts`。DNS 合并上游的 `nameserver-policy`、`proxy-server-nameserver-policy`、`proxy-server-nameserver` 和 `fake-ip-filter`，列表去重；增强模式、IPv6、默认 DNS 等核心设置由脚本控制。
 
-脚本不会无条件覆盖上游配置的全部字段：
+## 输出与构建
 
-- 始终保留上游 `hosts`；
-- 在生成 DNS 配置后，合并上游的 `nameserver-policy`、`proxy-server-nameserver-policy`、`proxy-server-nameserver` 和 `fake-ip-filter`（列表字段会去重）；
-- 脚本生成的 DNS 核心设置（如增强模式、IPv6 开关和默认 DNS 列表）保持优先级。
+JS 动态覆写运行时读取真实订阅，支持 URL hash 参数；默认按原名列出节点，也可启用 `regex` 动态纳入额外节点。
 
-这样既能维持脚本的统一 DNS 行为，也能保留订阅提供方针对特定域名的策略。
-
-### YAML Generator 的参数
-
-静态 YAML 配置文件通过 `scripts/yaml_generator/generator.ts` 穷举参数组合生成：
+静态 YAML 由生成器加载 `convert.js`，使用 `fake_proxies.json` 穷举以下组合：
 
 | 参数 | 可选值 | 数量 |
-|------|--------|------|
-| `ipv6` | true / false | 2 |
-| `full` | true / false | 2 |
-| `keepalive` | true / false | 2 |
-| `fakeip` | true / false | 2 |
-| `quic` | true / false | 2 |
-| `tun` | true / false | 2 |
-| `grouptype` | select / url-test / load-balance | 3 |
+| --- | --- | --- |
+| `ipv6`、`full`、`keepalive`、`fakeip`、`quic`、`tun` | true / false | 各 2 |
+| `adblock` | 0 / 1 / 2 / 3 | 4 |
 
-共计 2⁶ × 3 = 192 个 YAML 文件。`landing` 不在 FLAGS 中——YAML 生成器使用 `fake_proxies.json` 中的模拟节点数据自动判定。生成时固定启用 `regex: true`，因为静态配置无法预知实际订阅的节点名称。模拟数据覆盖多个地区，因此静态 YAML 产物仍走分组模式；展平分支由单元测试覆盖。
+共计 2⁶ × 4 = 256 份，固定 `regex=true`，文件名为：
 
----
+```text
+config_adblock-{0|1|2|3}_ipv6-{0|1}_full-{0|1}_keepalive-{0|1}_fakeip-{0|1}_quic-{0|1}_tun-{0|1}.yaml
+```
 
-## 输出模式
+静态配置依靠 `include-all` 填入实际节点，无法根据真实订阅判定链式代理或 Tailscale，也无法排除生成后新增的 Tailscale 名称；此类场景适合使用 JS。生成前清理已失效的 `config_*.yaml` 命名，删除失败会直接报错。旧的 `config_gt-*` 地址需更新。
 
-本项目支持两种部署方式，分别适用于不同使用场景：
+两种输出共享 `catalog/` 与 `builders/`。`npm run artifacts` 先构建再生成；产物仅用于本地验证，不提交 `convert.js`、`convert.min.js` 或 `yamls/`。源码推送到 `main` 后由 Preview 工作流更新 `preview`；正式版本按维护者授权流程发布至 `dist`。
 
-### JS 动态覆写（convert.js）
-
-**主要模式。** 运行于 Substore 等订阅转换工具的脚本执行环境（如 Loon、Surge 的脚本功能）。脚本动态分析上游订阅传入的**真实代理节点列表**，根据节点名称中的地理位置关键字和属性字段（如 `dialer-proxy`）实时分类，并生成包含完整代理组、规则、DNS 及 TUN 配置的 Clash 配置。
-
-这是推荐的使用方式，原因在于：
-
-- 节点分类结果始终反映当前订阅的实际状态，新增或失效的节点会自动归入对应分组
-- 代理组可直接枚举具体节点名称（`regex: false`），比正则过滤更精确
-- 支持完整的运行时参数覆盖（通过 URL hash 传参）
-
-### 静态 YAML 覆写（yamls/*.yaml）
-
-**备用模式。** 通过 `scripts/yaml_generator/generator.ts` 预先生成的 YAML 配置文件，存放在 `yamls/` 目录下。这些文件使用 `scripts/yaml_generator/fake_proxies.json` 中的模拟节点数据穷举所有参数组合生成，供无法运行 JS 脚本的客户端直接引用。
-
-YAML 模式的特点：
-
-- 地区组使用正则过滤（`include-all` + `filter`），「手动选择」组使用 `include-all`，而非枚举具体节点名称——这是静态文件无法预知真实节点列表的必然选择
-- 所有参数组合已预编译，用户只需选择对应的 YAML 文件 URL
-- 不依赖脚本运行时，兼容性最广
-
-两种模式共享同一套 `src/catalog/` 与 `src/builders/` 逻辑，区别仅在于运行时的数据来源和过滤方式。
+类型检查使用 TypeScript 7 原生编译器，ESLint 的类型服务保留 TypeScript 6，esbuild 擦除类型并打包，`tsx` 执行测试和 YAML 生成器。两份 TypeScript 工具各有用途。

@@ -18,31 +18,16 @@ npm install
 
 ## 自定义默认的脚本参数
 
-通过 URL 传递参数（如 `#fakeip=true`）是控制脚本行为的常用方式。各参数的默认值集中在 `src/args/schema.ts` 的 `ARG_DEFAULTS` 中；布尔开关的默认值则在 `src/args/parse.ts` 的 `buildFeatureFlags` 里通过解析函数的第二个参数指定。
+通过 URL 传递参数（如 `#fakeip=true`）可以控制脚本行为。所有参数的默认值集中在 `src/args/schema.ts` 的 `ARG_DEFAULTS` 中，`buildFeatureFlags()` 负责解析并回填。
 
-例如，要默认开启 IPv6 支持：
-
-```typescript
-// src/args/parse.ts
-export function buildFeatureFlags(args: ScriptArgs): FeatureFlags {
-    return {
-        groupType: parseGroupType(args),
-        ipv6Enabled: parseBool(args.ipv6, true), // 例如：改为 true 即可默认开启 IPv6
-        // ...
-    };
-}
-```
-
-而 `grouptype`、`threshold`、`fakeip` 这类带类型语义的默认值，直接修改 `src/args/schema.ts`：
+例如，要默认开启 IPv6 支持，只需调整对应字段：
 
 ```typescript
-// src/args/schema.ts
-export const ARG_DEFAULTS = {
-    groupType: 1, // 0=select，1=url-test，2=load-balance
-    countryThreshold: 2,
-    fakeIPEnabled: true,
-} as const;
+// src/args/schema.ts 的 ARG_DEFAULTS 中
+ipv6Enabled: true,
 ```
+
+当前支持 `ipv6`、`full`、`keepalive`、`fakeip`、`quic`、`regex`、`tun` 和 `adblock`。默认值变化时同步更新 `README.md`、`src/main.ts` 顶部说明与架构文档。
 
 ## 维护自定义直连清单
 
@@ -68,7 +53,7 @@ export const CUSTOM_DIRECT_RULES: readonly string[] = [
 
 ## 调整代理组
 
-如果你需要调整生成的代理组（Proxy Groups），或需要添加新的国家/地区节点分组，请编辑 `src/catalog/group-names.ts`、`src/catalog/icons.ts` 与 `src/catalog/service-groups.ts`。
+如果你需要调整生成的代理组（Proxy Groups），或需要添加新的分流策略，请编辑 `src/catalog/group-names.ts`、`src/catalog/icons.ts` 与 `src/catalog/service-groups.ts`。
 
 **添加新的代理组名称：**
 
@@ -92,7 +77,7 @@ export const ICONS = {
 
 **定义新的服务代理组：**
 
-当前仅有「直连」「国外」「AI」「自定义直连」四个可见策略，其余辅助组隐藏。可见策略采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
+当前可见策略依次为「直连」「自定义直连」「国外」「AI」；国外与 AI 直接使用原始节点，只在订阅确有链式代理或 Tailscale 时生成对应隐藏组。可见策略采用声明式目录，在 `src/catalog/service-groups.ts` 的 `serviceGroups` 数组中新增一条记录即可，**无需改动任何组装逻辑**：
 
 ```typescript
 // src/catalog/service-groups.ts
@@ -101,29 +86,13 @@ export const serviceGroups: ServiceGroupDef[] = [
     {
         name: PROXY_GROUPS.MY_CUSTOM_GROUP,
         icon: ICONS.myCustomGroup,
-        // ctx 包含 flags / nodes / lists，可按需挑选候选代理
-        proxies: (ctx) => ctx.lists.defaultProxies,
+        // ctx 包含 nodes / lists，原始节点候选共用一份来源
+        proxies: (ctx) => ctx.lists.proxySelector,
     },
 ];
 ```
 
-## 调整国家/地区匹配规则
-
-脚本会根据 `countriesMeta` 自动生成隐藏的地区辅助组，供「国外」与「AI」选择出口，因此只需修改国家/地区元数据即可。
-
-在 `src/catalog/countries.ts` 的 `countriesMeta` 中，你可以修改节点的正则匹配 `pattern` 以及代理组显示的 `icon`。`weight` 用于控制代理组在列表中的排序（越小越靠前）。
-
-```typescript
-// src/catalog/countries.ts
-export const countriesMeta: Record<string, CountryMeta> = {
-    // ...
-    印度尼西亚: {
-        pattern: "印尼|ID|Indonesia|🇮🇩",
-        icon: "图标链接",
-        weight: 0, // 示例：放在最前面
-    },
-};
-```
+节点展示顺序由订阅决定。测速后的延迟排序属于客户端设置：在 Clash Party「代理组」页面打开「显示设置 → 排序 → 延迟」即可（旧版通过排序按钮切换），覆写脚本无法读取后续的实时测速结果。
 
 ## 自定义分流规则 (`rule-providers`和`rules`)
 
